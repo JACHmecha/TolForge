@@ -1,8 +1,8 @@
 """
-Desktop GUI for the tolerance stack-up tool.
+Desktop GUI for tolstack (PySide6).
 
-Structure of the GUI:
-- Editable table of dimensions (name, nominal, tol+, tol-, sign)
+Window layout:
+- Editable dimension table (name, nominal, tol+, tol-, sign, optional Cpk)
 - Buttons to add/remove rows
 - Buttons to run each analysis method (Worst Case, RSS, Monte Carlo)
 - Results panel: text + histogram (matplotlib) for Monte Carlo
@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox,
-    QMessageBox, QGroupBox, QHeaderView
+    QMessageBox, QGroupBox, QHeaderView, QLineEdit
 )
 from PySide6.QtCore import Qt
 
@@ -28,7 +28,7 @@ from matplotlib.figure import Figure
 
 from tolstack import Stack, Dimension
 
-COLUMNS = ["Nombre", "Nominal", "Tol +", "Tol -", "Sign (+1/-1)"]
+COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+1/-1)", "Cpk (optional)"]
 
 
 class TolstackWindow(QMainWindow):
@@ -41,7 +41,7 @@ class TolstackWindow(QMainWindow):
         self.setCentralWidget(central)
         root_layout = QHBoxLayout(central)
 
-        # --- Panel izquierdo: tabla de dimensiones ---
+        # --- Left panel: dimension table ---
         left_panel = QVBoxLayout()
 
         self.table = QTableWidget(0, len(COLUMNS))
@@ -58,20 +58,27 @@ class TolstackWindow(QMainWindow):
         row_btns.addWidget(remove_btn)
         left_panel.addLayout(row_btns)
 
-        method_box = QGroupBox("Analysis Method")
+        method_box = QGroupBox("Analysis method")
         method_layout = QHBoxLayout()
         self.method_combo = QComboBox()
         self.method_combo.addItems(["worst_case", "rss", "monte_carlo"])
+        method_layout.addWidget(self.method_combo)
+
+        method_layout.addWidget(QLabel("Global Cpk:"))
+        self.default_cpk_input = QLineEdit()
+        self.default_cpk_input.setPlaceholderText("empty = uniform")
+        self.default_cpk_input.setMaximumWidth(90)
+        method_layout.addWidget(self.default_cpk_input)
+
         run_btn = QPushButton("Calculate")
         run_btn.clicked.connect(self.run_analysis)
-        method_layout.addWidget(self.method_combo)
         method_layout.addWidget(run_btn)
         method_box.setLayout(method_layout)
         left_panel.addWidget(method_box)
 
         root_layout.addLayout(left_panel, stretch=2)
 
-        # --- Panel derecho: resultados ---
+        # --- Right panel: results ---
         right_panel = QVBoxLayout()
 
         self.result_label = QLabel("No results yet.")
@@ -87,18 +94,20 @@ class TolstackWindow(QMainWindow):
 
         root_layout.addLayout(right_panel, stretch=3)
 
-        # Fila de ejemplo para que la GUI no arranque vacía
+        # Seed example row so the GUI doesn't start empty
         self._seed_example()
 
     def _seed_example(self):
-        for name, nominal, tol_plus, tol_minus, sign in [
-            ("Base", 25.0, 0.10, 0.05, 1),
-            ("Spacer", 12.5, 0.05, 0.05, 1),
-            ("Bearing", 40.0, 0.20, 0.10, -1),
+        # cpk="" leaves the row in uniform mode; a row with cpk set shows
+        # what a dimension with a known manufacturing process looks like.
+        for name, nominal, tol_plus, tol_minus, sign, cpk in [
+            ("Base", 25.0, 0.10, 0.05, 1, ""),
+            ("Spacer", 12.5, 0.05, 0.05, 1, "1.33"),
+            ("Bearing", 40.0, 0.20, 0.10, -1, ""),
         ]:
             self.add_row()
             r = self.table.rowCount() - 1
-            values = [name, nominal, tol_plus, tol_minus, sign]
+            values = [name, nominal, tol_plus, tol_minus, sign, cpk]
             for c, v in enumerate(values):
                 self.table.setItem(r, c, QTableWidgetItem(str(v)))
 
@@ -123,13 +132,39 @@ class TolstackWindow(QMainWindow):
                 raise ValueError(f"Row {r + 1} has invalid or incomplete data.")
 
             if sign not in (1, -1):
-                raise ValueError(f"Row {r + 1}: the sign must be +1 or -1, not {sign}.")
+                raise ValueError(f"Row {r + 1}: sign must be +1 or -1, not {sign}.")
+
+            # Cpk column is optional: empty or missing cell -> None (uniform)
+            cpk_item = self.table.item(r, 5)
+            cpk_text = cpk_item.text().strip() if cpk_item else ""
+            if cpk_text == "":
+                cpk = None
+            else:
+                try:
+                    cpk = float(cpk_text)
+                except ValueError:
+                    raise ValueError(f"Row {r + 1}: Cpk '{cpk_text}' is not a valid number.")
+                if cpk <= 0:
+                    raise ValueError(f"Row {r + 1}: Cpk must be greater than 0, not {cpk}.")
 
             stack.add_dimension(Dimension(
                 name=name, nominal=nominal,
-                tol_plus=tol_plus, tol_minus=tol_minus, sign=sign
+                tol_plus=tol_plus, tol_minus=tol_minus, sign=sign, cpk=cpk
             ))
         return stack
+
+    def _get_default_cpk(self) -> float | None:
+        """Reads the global Cpk field. Empty -> None (no default, falls back to uniform)."""
+        text = self.default_cpk_input.text().strip()
+        if text == "":
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            raise ValueError(f"Global Cpk '{text}' is not a valid number.")
+        if value <= 0:
+            raise ValueError(f"Global Cpk must be greater than 0, not {value}.")
+        return value
 
     def run_analysis(self):
         try:
@@ -155,14 +190,29 @@ class TolstackWindow(QMainWindow):
             self.canvas.setVisible(False)
 
         elif method == "monte_carlo":
-            result = stack.monte_carlo()
+            try:
+                default_cpk = self._get_default_cpk()
+            except ValueError as e:
+                QMessageBox.warning(self, "Invalid global Cpk", str(e))
+                return
+
+            result = stack.monte_carlo(default_cpk=default_cpk)
+
+            # Show which model was used per dimension, so it's never a surprise
+            model_lines = []
+            for d in stack.dimensions:
+                cpk = d.cpk if d.cpk is not None else default_cpk
+                model = f"Cpk={cpk}" if cpk is not None else "uniform"
+                model_lines.append(f"  {d.name}: {model}")
+
             self.result_label.setText(
                 f"Monte Carlo (10,000 iterations)\n"
+                + "\n".join(model_lines) + "\n"
                 f"{'-' * 30}\n"
-                f"Media      : {result.mean:.4f}\n"
-                f"Std Dev  : {result.std_dev:.4f}\n"
-                f"Min     : {result.minimum:.4f}\n"
-                f"Max     : {result.maximum:.4f}"
+                f"Mean       : {result.mean:.4f}\n"
+                f"Std Dev    : {result.std_dev:.4f}\n"
+                f"Minimum    : {result.minimum:.4f}\n"
+                f"Maximum    : {result.maximum:.4f}"
             )
             self._plot_histogram(result.samples)
             self.canvas.setVisible(True)
@@ -171,8 +221,8 @@ class TolstackWindow(QMainWindow):
         self.result_label.setText(
             f"{'-' * 30}\n"
             f"Nominal : {result.nominal:.4f}\n"
-            f"Max     : {result.upper_limit:.4f}\n"
-            f"Min     : {result.lower_limit:.4f}\n"
+            f"Maximum : {result.upper_limit:.4f}\n"
+            f"Minimum : {result.lower_limit:.4f}\n"
             f"+Tol    : {result.upper_limit - result.nominal:.4f}\n"
             f"-Tol    : {result.nominal - result.lower_limit:.4f}"
         )

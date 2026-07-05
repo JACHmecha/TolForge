@@ -12,12 +12,25 @@ import numpy as np
 
 @dataclass
 class Dimension:
-    """Representa una dimensión individual dentro de la cadena de tolerancias."""
+    """Representa una dimensión individual dentro de la cadena de tolerancias.
+
+    cpk: capacidad de proceso objetivo para el muestreo Monte Carlo.
+        - None (default): muestreo uniforme en [nominal-tol_minus, nominal+tol_plus].
+          Es el escenario más pesimista (equivale a un proceso muy poco
+          capaz, donde una pieza en el límite de tolerancia es tan probable
+          como una en el nominal).
+        - float (ej. 1.33): muestreo con distribución normal partida (split
+          normal), donde sigma se deriva del Cpk para que el límite de
+          tolerancia quede a 3*Cpk desviaciones estándar del nominal, igual
+          que en la definición estándar de Cpk en manufactura.
+    """
     name: str
     nominal: float
     tol_plus: float
     tol_minus: float
     sign: int = 1
+    cpk: float | None = None
+
 
 
 @dataclass
