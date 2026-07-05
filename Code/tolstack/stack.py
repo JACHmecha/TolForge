@@ -1,28 +1,18 @@
+"""
+Lógica de cálculo del tolerance stack-up.
+
+Contiene la clase Stack, que administra una lista de Dimension y
+ofrece los tres métodos de análisis: worst_case, rss y monte_carlo.
+"""
+
 from dataclasses import dataclass, field
 import numpy as np
 
-@dataclass
-class Dimension:
-    name: str
-    nominal: float
-    tol_plus: float
-    tol_minus: float
-    sign: int = 1
+from .models import Dimension, StackResult, MonteCarloResult
 
+# Métodos válidos para summary(); se normalizan a minúsculas antes de comparar.
+_VALID_METHODS = ("worst_case", "rss", "monte_carlo")
 
-@dataclass
-class StackResult:
-    nominal: float
-    upper_limit: float
-    lower_limit: float
-
-@dataclass
-class MonteCarloResult:
-    samples: np.ndarray
-    mean: float
-    std_dev: float
-    minimum: float
-    maximum: float
 
 @dataclass
 class Stack:
@@ -42,46 +32,32 @@ class Stack:
         """Calcula la dimensión nominal resultante."""
         return sum(d.sign * d.nominal for d in self.dimensions)
 
-    def worst_case(self):
-        """
-        Calcula los límites Worst Case del stack-up.
-        """
-
+    def worst_case(self) -> StackResult:
+        """Calcula los límites Worst Case del stack-up."""
         nominal = self.nominal()
-
         upper = nominal
         lower = nominal
 
         for d in self.dimensions:
-
             if d.sign > 0:
                 upper += d.tol_plus
                 lower -= d.tol_minus
-
             else:
                 upper += d.tol_minus
                 lower -= d.tol_plus
 
-        return StackResult(
-            nominal=nominal,
-            upper_limit=upper,
-            lower_limit=lower
-        )
-    
-    def rss(self):
+        return StackResult(nominal=nominal, upper_limit=upper, lower_limit=lower)
+
+    def rss(self) -> StackResult:
         """Calcula los límites RSS del stack-up."""
-
         nominal = self.nominal()
-
         upper_rss = 0.0
         lower_rss = 0.0
 
         for d in self.dimensions:
-
             if d.sign > 0:
                 upper_rss += d.tol_plus**2
                 lower_rss += d.tol_minus**2
-
             else:
                 upper_rss += d.tol_minus**2
                 lower_rss += d.tol_plus**2
@@ -94,20 +70,17 @@ class Stack:
             upper_limit=nominal + upper_rss,
             lower_limit=nominal - lower_rss
         )
-    
-    def monte_carlo(self, iterations=10000):
-        """Realiza un análisis Monte Carlo del stack-up."""
 
+    def monte_carlo(self, iterations=10000) -> MonteCarloResult:
+        """Realiza un análisis Monte Carlo del stack-up."""
         samples = np.zeros(iterations)
 
         for d in self.dimensions:
-
             values = np.random.uniform(
                 d.nominal - d.tol_minus,
                 d.nominal + d.tol_plus,
                 iterations
             )
-
             samples += d.sign * values
 
         return MonteCarloResult(
@@ -118,15 +91,24 @@ class Stack:
             maximum=np.max(samples)
         )
 
-    def summary(self, method="worst_case"):
-        """Imprime un resumen del stack."""
+    def summary(self, method: str = "worst_case"):
+        """Imprime un resumen del stack.
+
+        Nota: `method` se normaliza a minúsculas, así que "RSS", "rss"
+        o "Rss" son equivalentes. Métodos inválidos lanzan ValueError
+        en vez de fallar silenciosamente con un result no definido.
+        """
+        method = method.lower()
+
+        if method not in _VALID_METHODS:
+            raise ValueError(
+                f"Método '{method}' no reconocido. Usa uno de: {_VALID_METHODS}"
+            )
 
         print("----- STACK SUMMARY -----")
 
         for d in self.dimensions:
-
             sign = "+" if d.sign > 0 else "-"
-
             print(
                 f"{sign} {d.name:15}"
                 f"{d.nominal:8.3f}"
@@ -134,11 +116,7 @@ class Stack:
                 f"  -{d.tol_minus:.3f}"
             )
 
-        if method == "worst_case":
-            result = self.worst_case()
-        elif method == "rss":
-            result = self.rss()
-        elif method == "monte_carlo":
+        if method == "monte_carlo":
             result = self.monte_carlo()
             print("-------------------------")
             print(f"Mean      : {result.mean:.3f}")
@@ -147,48 +125,11 @@ class Stack:
             print(f"Maximum   : {result.maximum:.3f}")
             return
 
+        result = self.worst_case() if method == "worst_case" else self.rss()
+
         print("-------------------------")
         print(f"Nominal : {result.nominal:.3f}")
         print(f"Maximum : {result.upper_limit:.3f}")
         print(f"Minimum : {result.lower_limit:.3f}")
         print(f"+Tol    : {result.upper_limit - result.nominal:.3f}")
         print(f"-Tol    : {result.nominal - result.lower_limit:.3f}")
-
-
-# ==========================================================
-# Ejemplo de uso
-# ==========================================================
-
-stack = Stack()
-
-stack.add_dimension(
-    Dimension(
-        name="Base",
-        nominal=25.0,
-        tol_plus=0.10,
-        tol_minus=0.05,
-        sign=1
-    )
-)
-
-stack.add_dimension(
-    Dimension(
-        name="Spacer",
-        nominal=12.5,
-        tol_plus=0.05,
-        tol_minus=0.05,
-        sign=1
-    )
-)
-
-stack.add_dimension(
-    Dimension(
-        name="Bearing",
-        nominal=40.0,
-        tol_plus=0.20,
-        tol_minus=0.10,
-        sign=-1
-    )
-)
-
-stack.summary(method="Monte_Carlo")
