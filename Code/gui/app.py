@@ -160,9 +160,9 @@ class TolstackWindow(QMainWindow):
                 f"Monte Carlo (10,000 iterations)\n"
                 f"{'-' * 30}\n"
                 f"Media      : {result.mean:.4f}\n"
-                f"Desv. Std  : {result.std_dev:.4f}\n"
-                f"Mínimo     : {result.minimum:.4f}\n"
-                f"Máximo     : {result.maximum:.4f}"
+                f"Std Dev  : {result.std_dev:.4f}\n"
+                f"Min     : {result.minimum:.4f}\n"
+                f"Max     : {result.maximum:.4f}"
             )
             self._plot_histogram(result.samples)
             self.canvas.setVisible(True)

@@ -3,6 +3,9 @@
 Herramienta para análisis de acumulación de tolerancias (tolerance stack-up)
 mediante tres métodos: Worst Case, RSS (Root Sum Squares) y Monte Carlo.
 
+Incluye una GUI de escritorio (PySide6) para armar la cadena de dimensiones
+y correr los tres métodos sin tocar código.
+
 ## Estructura
 
 ```
@@ -12,13 +15,38 @@ Code/
 │   ├── models.py       # Dataclasses de datos (sin lógica)
 │   └── stack.py        # Lógica de cálculo (clase Stack)
 ├── examples/
-│   └── basic_usage.py  # Ejemplo ejecutable
-└── main.py             # Punto de entrada rápido
+│   └── basic_usage.py  # Ejemplo ejecutable por consola
+├── gui/
+│   └── app.py           # GUI de escritorio
+└── main.py             # Punto de entrada rápido (consola)
+```
+
+## Instalación
+
+```bash
+git clone https://github.com/JACHmecha/3D-tolerance-stack-up-tool.git
+cd 3D-tolerance-stack-up-tool
+pip install -r requirements.txt
 ```
 
 ## Uso
 
-Todo el código vive dentro de `Code/`, así que los comandos se ejecutan desde ahí:
+### GUI de escritorio
+
+```bash
+cd Code
+python gui/app.py
+```
+
+Tabla editable de dimensiones (nombre, nominal, tol+, tol-, signo), selector de
+método y botón de cálculo. Worst Case y RSS muestran el resumen numérico;
+Monte Carlo además grafica el histograma de la distribución resultante.
+
+| Worst Case | RSS | Monte Carlo |
+|---|---|---|
+| ![Worst Case](docs/screenshots/worst_case.png) | ![RSS](docs/screenshots/rss.png) | ![Monte Carlo](docs/screenshots/monte_carlo.png) |
+
+### Por consola
 
 ```bash
 cd Code
@@ -26,7 +54,7 @@ python main.py
 python examples/basic_usage.py
 ```
 
-Como librería:
+### Como librería
 
 ```python
 from tolstack import Stack, Dimension
@@ -46,3 +74,7 @@ stack.summary(method="rss")  # o "worst_case" / "monte_carlo"
   silencioso porque `result` nunca se asignaba).
 - El ejemplo de uso se movió a `Code/examples/basic_usage.py`, fuera de la
   librería, para poder importar `tolstack` sin ejecutar código de ejemplo.
+
+## Licencia
+
+Apache License 2.0 — ver [LICENSE](LICENSE).
