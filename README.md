@@ -1,4 +1,4 @@
-# 3D Tolerance Stack-up Tool
+# TolForge
 
 A tool for tolerance stack-up analysis using three methods: Worst Case, RSS
 (Root Sum Squares), and Monte Carlo.
