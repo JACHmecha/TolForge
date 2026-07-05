@@ -6,16 +6,27 @@ mediante tres métodos: Worst Case, RSS (Root Sum Squares) y Monte Carlo.
 ## Estructura
 
 ```
-tolstack/
-├── __init__.py     # API pública: Stack, Dimension, StackResult, MonteCarloResult
-├── models.py       # Dataclasses de datos (sin lógica)
-└── stack.py        # Lógica de cálculo (clase Stack)
-examples/
-└── basic_usage.py  # Ejemplo ejecutable
-main.py             # Punto de entrada rápido
+Code/
+├── tolstack/
+│   ├── __init__.py     # API pública: Stack, Dimension, StackResult, MonteCarloResult
+│   ├── models.py       # Dataclasses de datos (sin lógica)
+│   └── stack.py        # Lógica de cálculo (clase Stack)
+├── examples/
+│   └── basic_usage.py  # Ejemplo ejecutable
+└── main.py             # Punto de entrada rápido
 ```
 
 ## Uso
+
+Todo el código vive dentro de `Code/`, así que los comandos se ejecutan desde ahí:
+
+```bash
+cd Code
+python main.py
+python examples/basic_usage.py
+```
+
+Como librería:
 
 ```python
 from tolstack import Stack, Dimension
@@ -33,5 +44,5 @@ stack.summary(method="rss")  # o "worst_case" / "monte_carlo"
   una lista de métodos permitidos, lanzando `ValueError` si no coincide
   (antes: pasar `"Monte_Carlo"` con mayúsculas producía un `NameError`
   silencioso porque `result` nunca se asignaba).
-- El ejemplo de uso se movió a `examples/basic_usage.py`, fuera de la
+- El ejemplo de uso se movió a `Code/examples/basic_usage.py`, fuera de la
   librería, para poder importar `tolstack` sin ejecutar código de ejemplo.
