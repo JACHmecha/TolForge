@@ -1,23 +1,24 @@
-"""
-tolstack — herramienta de análisis de tolerance stack-up.
+"""tolstack package public API.
 
-Uso típico:
-
-    from tolstack import Stack, Dimension
-
-    stack = Stack()
-    stack.add_dimension(Dimension(name="Base", nominal=25.0, tol_plus=0.10, tol_minus=0.05))
-    stack.summary(method="rss")
+Expose core classes from the submodules without executing any
+top-level test code when the package is imported. The original
+file contained ad-hoc test/demo code that ran on import which
+caused unexpected side-effects for consumers (for example the GUI
+app). Keep this module lightweight and only export symbols.
 """
 
-from .models import Dimension, StackResult, MonteCarloResult
 from .stack import Stack
+from .models import (
+    Dimension, StackResult, MonteCarloResult, FitAssessment
+)
+from .bank import DimensionBank, DimensionTemplate
 
 __all__ = [
+    "Stack",
     "Dimension",
     "StackResult",
     "MonteCarloResult",
-    "Stack",
+    "FitAssessment",
+    "DimensionBank",
+    "DimensionTemplate",
 ]
-
-__version__ = "0.1.0"

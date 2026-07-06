@@ -11,7 +11,7 @@ three methods without touching code.
 ```
 Code/
 ├── tolstack/
-│   ├── __init__.py     # Public API: Stack, Dimension, StackResult, MonteCarloResult
+│   ├── __init__.py     # Public API: Stack, Dimension, StackResult, MonteCarloResult; no import-time test/demo execution
 │   ├── models.py       # Pure data models (no logic)
 │   └── stack.py        # Calculation logic (Stack class)
 ├── examples/
@@ -38,9 +38,24 @@ cd Code
 python gui/app.py
 ```
 
-Editable dimension table (name, nominal, tol+, tol-, sign, optional Cpk),
-method selector, and Calculate button. Worst Case and RSS show the numeric
-summary; Monte Carlo also plots a histogram of the resulting distribution.
+The GUI lets you build and analyze a tolerance chain from a table of
+dimensions, then compare the result against a target using one of three
+methods.
+
+Key features:
+- Editable dimension rows: `Name`, `Nominal`, `Tol +`, `Tol -`, `Sign`, and
+  optional `Cpk`.
+- Dimension bank: save the selected row as a reusable template, add bank
+  entries to the current stack with a chosen sign, and persist/load banks
+  from JSON files.
+- Analysis controls: choose `worst_case`, `rss`, or `monte_carlo`, set a
+  global `Cpk` fallback, and enter a target value for fit assessment.
+- Fit assessment: the app compares results against the target and reports
+  `gap`, `interference`, or `mixed`; Monte Carlo also shows the probability
+  of interference.
+
+Worst Case and RSS show numeric summary values, while Monte Carlo also
+renders a histogram of the resulting distribution.
 
 **Monte Carlo model per dimension:**
 - Empty "Cpk" cell → uniform sampling across the full tolerance range

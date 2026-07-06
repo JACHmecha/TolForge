@@ -1,16 +1,16 @@
 """
-Lógica de cálculo del tolerance stack-up.
+Calculation logic for the tolerance stack-up.
 
-Contiene la clase Stack, que administra una lista de Dimension y
-ofrece los tres métodos de análisis: worst_case, rss y monte_carlo.
+Contains the Stack class, which manages a list of Dimension objects and
+offers the three analysis methods: worst_case, rss, and monte_carlo.
 """
 
 from dataclasses import dataclass, field
 import numpy as np
 
-from .models import Dimension, StackResult, MonteCarloResult
+from .models import Dimension, StackResult, MonteCarloResult, FitAssessment
 
-# Métodos válidos para summary(); se normalizan a minúsculas antes de comparar.
+# Valid methods for summary(); normalized to lowercase before comparing.
 _VALID_METHODS = ("worst_case", "rss", "monte_carlo")
 
 
@@ -19,21 +19,21 @@ class Stack:
     dimensions: list[Dimension] = field(default_factory=list)
 
     def add_dimension(self, dimension: Dimension):
-        """Añade una dimensión a la cadena."""
+        """Adds a dimension to the chain."""
         self.dimensions.append(dimension)
 
     def remove_dimension(self, name: str):
-        """Elimina una dimensión por nombre."""
+        """Removes a dimension by name."""
         self.dimensions = [
             d for d in self.dimensions if d.name != name
         ]
 
     def nominal(self):
-        """Calcula la dimensión nominal resultante."""
+        """Calculates the resulting nominal dimension."""
         return sum(d.sign * d.nominal for d in self.dimensions)
 
     def worst_case(self) -> StackResult:
-        """Calcula los límites Worst Case del stack-up."""
+        """Calculates the Worst Case limits of the stack-up."""
         nominal = self.nominal()
         upper = nominal
         lower = nominal
@@ -49,7 +49,7 @@ class Stack:
         return StackResult(nominal=nominal, upper_limit=upper, lower_limit=lower)
 
     def rss(self) -> StackResult:
-        """Calcula los límites RSS del stack-up."""
+        """Calculates the RSS limits of the stack-up."""
         nominal = self.nominal()
         upper_rss = 0.0
         lower_rss = 0.0
@@ -72,21 +72,20 @@ class Stack:
         )
 
     def monte_carlo(self, iterations=10000, default_cpk: float | None = None) -> MonteCarloResult:
-        """Realiza un análisis Monte Carlo del stack-up.
+        """Runs a Monte Carlo analysis of the stack-up.
 
-        Por dimensión, el muestreo depende de `Dimension.cpk`:
-        - `cpk is None` (default): distribución uniforme sobre todo el
-          rango de tolerancia. Es el caso más pesimista, no representa
-          un proceso de manufactura real.
-        - `cpk` definido (ej. 1.33, 1.67, 2.0): distribución normal
-          partida (split normal), calibrada para que el límite de
-          tolerancia quede a `3 * cpk` desviaciones estándar del
-          nominal, siguiendo la definición estándar de Cpk.
+        Per dimension, the sampling depends on `Dimension.cpk`:
+        - `cpk is None` (default): uniform distribution over the entire
+          tolerance range. This is the most pessimistic case and doesn't
+          represent a real manufacturing process.
+        - `cpk` set (e.g. 1.33, 1.67, 2.0): split normal distribution,
+          calibrated so the tolerance limit sits at `3 * cpk` standard
+          deviations from nominal, following the standard Cpk definition.
 
-        `default_cpk`: si una dimensión no trae su propio `cpk`, se le
-        aplica este valor en vez de caer a uniforme. Útil para correr
-        el stack completo bajo un supuesto de proceso homogéneo sin
-        tener que editar cada Dimension.
+        `default_cpk`: if a dimension doesn't carry its own `cpk`, this
+        value is applied instead of falling back to uniform. Useful for
+        running the whole stack under a single homogeneous process
+        assumption without editing every Dimension.
         """
         samples = np.zeros(iterations)
 
@@ -102,7 +101,7 @@ class Stack:
             else:
                 if cpk <= 0:
                     raise ValueError(
-                        f"Cpk de '{d.name}' debe ser > 0, no {cpk}."
+                        f"Cpk for '{d.name}' must be > 0, not {cpk}."
                     )
                 sigma_plus = d.tol_plus / (3 * cpk)
                 sigma_minus = d.tol_minus / (3 * cpk)
@@ -114,7 +113,6 @@ class Stack:
             samples += d.sign * values
 
         return MonteCarloResult(
-
             samples=samples,
             mean=np.mean(samples),
             std_dev=np.std(samples),
@@ -123,17 +121,17 @@ class Stack:
         )
 
     def summary(self, method: str = "worst_case", default_cpk: float | None = None):
-        """Imprime un resumen del stack.
+        """Prints a summary of the stack.
 
-        Nota: `method` se normaliza a minúsculas, así que "RSS", "rss"
-        o "Rss" son equivalentes. Métodos inválidos lanzan ValueError
-        en vez de fallar silenciosamente con un result no definido.
+        Note: `method` is normalized to lowercase, so "RSS", "rss", and
+        "Rss" are equivalent. Invalid methods raise ValueError instead of
+        failing silently with an undefined result.
         """
         method = method.lower()
 
         if method not in _VALID_METHODS:
             raise ValueError(
-                f"Método '{method}' no reconocido. Usa uno de: {_VALID_METHODS}"
+                f"Method '{method}' not recognized. Use one of: {_VALID_METHODS}"
             )
 
         print("----- STACK SUMMARY -----")
@@ -164,3 +162,57 @@ class Stack:
         print(f"Minimum : {result.lower_limit:.3f}")
         print(f"+Tol    : {result.upper_limit - result.nominal:.3f}")
         print(f"-Tol    : {result.nominal - result.lower_limit:.3f}")
+
+    def assess_fit(self, result, target: float = 0.0) -> FitAssessment:
+        """Compares a stack result against a target and classifies the fit.
+
+        Convention: positive margin = gap, negative margin = interference.
+        `result` can be a StackResult (worst_case/rss) or a MonteCarloResult.
+
+        For StackResult: classifies the whole range as "gap", "interference",
+        or "mixed" (straddles target — some assemblies gap, some interfere).
+
+        For MonteCarloResult: additionally computes the fraction of samples
+        that fall below target (interference_probability), which is the
+        actual point of running Monte Carlo for a fit analysis instead of
+        just worst_case/rss — you get a probability, not just a verdict.
+        """
+        if isinstance(result, MonteCarloResult):
+            interference_probability = float(np.mean(result.samples < target))
+
+            if interference_probability == 0.0:
+                verdict = "gap"
+            elif interference_probability == 1.0:
+                verdict = "interference"
+            else:
+                verdict = "mixed"
+
+            return FitAssessment(
+                target=target,
+                verdict=verdict,
+                margin_min=result.minimum - target,
+                margin_max=result.maximum - target,
+                interference_probability=interference_probability,
+            )
+
+        elif isinstance(result, StackResult):
+            if result.lower_limit >= target:
+                verdict = "gap"
+            elif result.upper_limit <= target:
+                verdict = "interference"
+            else:
+                verdict = "mixed"
+
+            return FitAssessment(
+                target=target,
+                verdict=verdict,
+                margin_min=result.lower_limit - target,
+                margin_max=result.upper_limit - target,
+                interference_probability=None,
+            )
+
+        else:
+            raise TypeError(
+                f"assess_fit() expects a StackResult or MonteCarloResult, "
+                f"got {type(result).__name__}."
+            )

@@ -40,7 +40,6 @@
 
 ### Planned Features
 
--   [ ] Streamlit web interface
 -   [ ] Interactive stack editor
 -   [ ] Real-time calculations
 -   [ ] Engineering report generation
@@ -56,7 +55,6 @@
 -   [ ] Uniform distributions
 -   [ ] Triangular distributions
 -   [ ] Custom distributions
--   [ ] Process capability (Cp/Cpk)
 -   [ ] Yield prediction
 -   [ ] Six Sigma analysis
 
