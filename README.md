@@ -18,6 +18,10 @@ Code/
 │   └── basic_usage.py  # Runnable console example
 ├── gui/
 │   └── app.py           # Desktop GUI
+├── dist/
+│   └── TolForge/
+│       ├── TolForge.exe
+│       └── _internal/
 └── main.py             # Quick entry point (console)
 ```
 
@@ -28,6 +32,33 @@ git clone https://github.com/JACHmecha/3D-tolerance-stack-up-tool.git
 cd 3D-tolerance-stack-up-tool
 pip install -r requirements.txt
 ```
+
+## Packaging and installer
+
+For Windows, the repository includes a helper script to build a standalone
+executable bundle using PyInstaller.
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\build_installer.ps1
+```
+
+This will install PyInstaller if needed and generate a bundled app under
+`dist\TolForge`.
+
+The generated bundle includes:
+- `dist\TolForge\TolForge.exe`
+- `dist\TolForge\_internal\` (runtime support files)
+
+You can also install the application from source as a Python package:
+
+```bash
+cd Code
+pip install .
+```
+
+That makes the GUI entry point available as the `tolforge` command on
+Windows when installed into the active Python environment.
 
 ## Usage
 

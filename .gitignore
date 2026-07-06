@@ -10,7 +10,6 @@ env/
 
 # Empaquetado / distribución
 build/
-dist/
 *.egg-info/
 
 # Editores / SO
