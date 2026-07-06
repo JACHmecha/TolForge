@@ -18,10 +18,6 @@ Code/
 │   └── basic_usage.py  # Runnable console example
 ├── gui/
 │   └── app.py           # Desktop GUI
-├── dist/
-│   └── TolForge/
-│       ├── TolForge.exe
-│       └── _internal/
 └── main.py             # Quick entry point (console)
 ```
 
@@ -43,12 +39,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\build_installer.ps1
 ```
 
-This will install PyInstaller if needed and generate a bundled app under
-`dist\TolForge`.
-
-The generated bundle includes:
-- `dist\TolForge\TolForge.exe`
-- `dist\TolForge\_internal\` (runtime support files)
+This will install PyInstaller if needed and generate a single-file
+executable under `dist\TolForge.exe`.
 
 You can also install the application from source as a Python package:
 
