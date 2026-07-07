@@ -1,6 +1,7 @@
 name: Build release executable
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
@@ -25,9 +26,10 @@ jobs:
 
       - name: Build executable
         run: |
-          pyinstaller --noconfirm --onefile --name TolForge --distpath dist --workpath build --specpath . --add-data "Code;Code" --add-data "README.md;." Code/main.py
+          python -m PyInstaller --noconfirm --clean --distpath dist --workpath build TolForge.spec
 
       - name: Upload executable to release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/TolForge.exe
+          fail_on_unmatched_files: true
