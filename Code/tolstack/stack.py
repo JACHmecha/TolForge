@@ -30,7 +30,15 @@ class Stack:
 
     def nominal(self):
         """Calculates the resulting nominal dimension."""
-        return sum(d.sign * d.nominal for d in self.dimensions)
+        return sum(self._sign_multiplier(d.sign) * d.nominal for d in self.dimensions)
+
+    @staticmethod
+    def _sign_multiplier(sign: str | int) -> int:
+        if sign in {"+", 1, "+1"}:
+            return 1
+        if sign in {"-", -1, "-1"}:
+            return -1
+        raise ValueError(f"Unsupported sign value: {sign}")
 
     def worst_case(self) -> StackResult:
         """Calculates the Worst Case limits of the stack-up."""
@@ -39,7 +47,7 @@ class Stack:
         lower = nominal
 
         for d in self.dimensions:
-            if d.sign > 0:
+            if self._sign_multiplier(d.sign) > 0:
                 upper += d.tol_plus
                 lower -= d.tol_minus
             else:
@@ -55,7 +63,7 @@ class Stack:
         lower_rss = 0.0
 
         for d in self.dimensions:
-            if d.sign > 0:
+            if self._sign_multiplier(d.sign) > 0:
                 upper_rss += d.tol_plus**2
                 lower_rss += d.tol_minus**2
             else:
@@ -91,6 +99,7 @@ class Stack:
 
         for d in self.dimensions:
             cpk = d.cpk if d.cpk is not None else default_cpk
+            sign_multiplier = self._sign_multiplier(d.sign)
 
             if cpk is None:
                 values = np.random.uniform(
@@ -110,7 +119,7 @@ class Stack:
                 offsets = np.where(z >= 0, z * sigma_plus, z * sigma_minus)
                 values = d.nominal + offsets
 
-            samples += d.sign * values
+            samples += sign_multiplier * values
 
         return MonteCarloResult(
             samples=samples,
@@ -137,7 +146,7 @@ class Stack:
         print("----- STACK SUMMARY -----")
 
         for d in self.dimensions:
-            sign = "+" if d.sign > 0 else "-"
+            sign = "+" if self._sign_multiplier(d.sign) > 0 else "-"
             print(
                 f"{sign} {d.name:15}"
                 f"{d.nominal:8.3f}"

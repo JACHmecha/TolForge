@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox,
     QMessageBox, QGroupBox, QHeaderView, QLineEdit, QFileDialog,
-    QInputDialog
+    QInputDialog, QCheckBox, QDoubleSpinBox, QSpinBox
 )
 from PySide6.QtCore import Qt
 
@@ -32,7 +32,7 @@ from matplotlib.figure import Figure
 
 from tolstack import Stack, Dimension, DimensionBank, DimensionTemplate, MonteCarloResult
 
-COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+1/-1)", "Cpk (optional)"]
+COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+/-)", "Cpk (optional)"]
 
 
 class TolstackWindow(QMainWindow):
@@ -42,6 +42,14 @@ class TolstackWindow(QMainWindow):
         self.resize(1000, 650)
 
         self.bank = DimensionBank()
+        self.interval_min_value = 0.0
+        self.interval_max_value = 0.0
+        self._histogram_ax = None
+        self._interval_lines = []
+        self._dragged_line = None
+        self._dragged_line_index = None
+        self._last_samples = None
+        self._last_monte_carlo_payload = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -54,6 +62,17 @@ class TolstackWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         left_panel.addWidget(self.table)
+
+        legend = QHBoxLayout()
+        legend.addWidget(QLabel("Legend:"))
+        positive_label = QLabel("● Green = positive")
+        positive_label.setStyleSheet("color: #4caf50; font-weight: bold;")
+        legend.addWidget(positive_label)
+        negative_label = QLabel("● Red = negative")
+        negative_label.setStyleSheet("color: #f44336; font-weight: bold;")
+        legend.addWidget(negative_label)
+        legend.addStretch(1)
+        left_panel.addLayout(legend)
 
         row_btns = QHBoxLayout()
         add_btn = QPushButton("+ Add dimension")
@@ -106,12 +125,34 @@ class TolstackWindow(QMainWindow):
         self.default_cpk_input.setMaximumWidth(90)
         method_layout.addWidget(self.default_cpk_input)
 
-        method_layout.addWidget(QLabel("Target:"))
-        self.target_input = QLineEdit()
-        self.target_input.setPlaceholderText("0")
-        self.target_input.setMaximumWidth(70)
-        method_layout.addWidget(self.target_input)
+        method_layout.addWidget(QLabel("Iterations:"))
+        self.iterations_input = QSpinBox()
+        self.iterations_input.setRange(100, 1000000)
+        self.iterations_input.setSingleStep(1000)
+        self.iterations_input.setValue(10000)
+        self.iterations_input.setMaximumWidth(120)
+        method_layout.addWidget(self.iterations_input)
 
+        method_layout.addWidget(QLabel("Range min:"))
+        self.range_min_input = QDoubleSpinBox()
+        self.range_min_input.setRange(-1e12, 1e12)
+        self.range_min_input.setDecimals(4)
+        self.range_min_input.setValue(0.0)
+        self.range_min_input.setMaximumWidth(110)
+        method_layout.addWidget(self.range_min_input)
+
+        method_layout.addWidget(QLabel("Range max:"))
+        self.range_max_input = QDoubleSpinBox()
+        self.range_max_input.setRange(-1e12, 1e12)
+        self.range_max_input.setDecimals(4)
+        self.range_max_input.setValue(0.0)
+        self.range_max_input.setMaximumWidth(110)
+        method_layout.addWidget(self.range_max_input)
+
+        self.range_min_input.valueChanged.connect(self._sync_interval_from_inputs)
+        self.range_max_input.valueChanged.connect(self._sync_interval_from_inputs)
+
+        method_layout.addStretch(1)
         run_btn = QPushButton("Calculate")
         run_btn.clicked.connect(self.run_analysis)
         method_layout.addWidget(run_btn)
@@ -132,6 +173,9 @@ class TolstackWindow(QMainWindow):
         self.figure = Figure(figsize=(4, 3))
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setVisible(False)
+        self.figure.canvas.mpl_connect("button_press_event", self._on_histogram_click)
+        self.figure.canvas.mpl_connect("motion_notify_event", self._on_histogram_move)
+        self.figure.canvas.mpl_connect("button_release_event", self._on_histogram_release)
         right_panel.addWidget(self.canvas)
 
         root_layout.addLayout(right_panel, stretch=3)
@@ -148,15 +192,18 @@ class TolstackWindow(QMainWindow):
         # cpk="" leaves the row in uniform mode; a row with cpk set shows
         # what a dimension with a known manufacturing process looks like.
         for name, nominal, tol_plus, tol_minus, sign, cpk in [
-            ("Base", 25.0, 0.10, 0.05, 1, ""),
-            ("Spacer", 12.5, 0.05, 0.05, 1, "1.33"),
-            ("Bearing", 40.0, 0.20, 0.10, -1, ""),
+            ("Base", 25.0, 0.10, 0.05, "+", ""),
+            ("Spacer", 12.5, 0.05, 0.05, "+", "1.33"),
+            ("Bearing", 40.0, 0.20, 0.10, "-", ""),
         ]:
             self.add_row()
             r = self.table.rowCount() - 1
             values = [name, nominal, tol_plus, tol_minus, sign, cpk]
             for c, v in enumerate(values):
-                self.table.setItem(r, c, QTableWidgetItem(str(v)))
+                if c == 4:
+                    self._set_sign_switch(r, v)
+                else:
+                    self.table.setItem(r, c, QTableWidgetItem(str(v)))
 
     def _seed_bank(self):
         for name, nominal, tol_plus, tol_minus, cpk in [
@@ -176,11 +223,41 @@ class TolstackWindow(QMainWindow):
 
     def add_row(self):
         self.table.insertRow(self.table.rowCount())
+        self._set_sign_switch(self.table.rowCount() - 1, "+")
 
     def remove_row(self):
         row = self.table.currentRow()
         if row >= 0:
             self.table.removeRow(row)
+
+    def _set_sign_switch(self, row: int, sign: str | int):
+        checkbox = QCheckBox()
+        checkbox.setChecked(sign in {1, "+"})
+        checkbox.setToolTip("Toggle the dimension sign")
+        checkbox.setStyleSheet(
+            "QCheckBox { padding: 2px; }"
+            "QCheckBox::indicator { width: 34px; height: 18px; border-radius: 9px; border: 1px solid #777; background: #f44336; color: white; font-weight: bold; }"
+            "QCheckBox::indicator:checked { background: #4caf50; }"
+            "QCheckBox::indicator:checked::before { content: '+'; }"
+            "QCheckBox::indicator:unchecked::before { content: '-'; }"
+        )
+        self.table.setCellWidget(row, 4, checkbox)
+
+    def _get_sign_from_row(self, row: int) -> str:
+        widget = self.table.cellWidget(row, 4)
+        if isinstance(widget, QCheckBox):
+            return "+" if widget.isChecked() else "-"
+
+        item = self.table.item(row, 4)
+        if item is None:
+            return "+"
+
+        text = item.text().strip()
+        if text in {"+", "1", "+1"}:
+            return "+"
+        if text in {"-", "-1"}:
+            return "-"
+        raise ValueError(f"Row {row + 1}: sign must be '+' or '-', not {text}.")
 
     def _add_table_row(self, name, nominal, tol_plus, tol_minus, sign, cpk):
         self.add_row()
@@ -188,7 +265,10 @@ class TolstackWindow(QMainWindow):
         cpk_text = "" if cpk is None else str(cpk)
         values = [name, nominal, tol_plus, tol_minus, sign, cpk_text]
         for c, v in enumerate(values):
-            self.table.setItem(r, c, QTableWidgetItem(str(v)))
+            if c == 4:
+                self._set_sign_switch(r, v)
+            else:
+                self.table.setItem(r, c, QTableWidgetItem(str(v)))
 
     # ------------------------------------------------------------------
     # Dimension bank
@@ -207,12 +287,12 @@ class TolstackWindow(QMainWindow):
         sign_text, ok = QInputDialog.getItem(
             self, "Sign in this stack",
             f"Sign for '{name}' in the current stack:",
-            ["+1", "-1"], 0, False
+            ["+", "-"], 0, False
         )
         if not ok:
             return
 
-        sign = int(sign_text)
+        sign = "+" if sign_text == "+" else "-"
         template = self.bank.get(name)
         self._add_table_row(
             template.name, template.nominal, template.tol_plus,
@@ -300,12 +380,12 @@ class TolstackWindow(QMainWindow):
                 nominal = float(self.table.item(r, 1).text())
                 tol_plus = float(self.table.item(r, 2).text())
                 tol_minus = float(self.table.item(r, 3).text())
-                sign = int(self.table.item(r, 4).text())
+                sign = self._get_sign_from_row(r)
             except (AttributeError, ValueError):
                 raise ValueError(f"Row {r + 1} has invalid or incomplete data.")
 
-            if sign not in (1, -1):
-                raise ValueError(f"Row {r + 1}: sign must be +1 or -1, not {sign}.")
+            if sign not in {"+", "-"}:
+                raise ValueError(f"Row {r + 1}: sign must be '+' or '-', not {sign}.")
 
             # Cpk column is optional: empty or missing cell -> None (uniform)
             cpk_item = self.table.item(r, 5)
@@ -339,15 +419,114 @@ class TolstackWindow(QMainWindow):
             raise ValueError(f"Global Cpk must be greater than 0, not {value}.")
         return value
 
-    def _get_target(self) -> float:
-        """Reads the target field. Empty -> 0.0."""
-        text = self.target_input.text().strip()
-        if text == "":
-            return 0.0
+    def _get_iterations(self) -> int:
+        return int(self.iterations_input.value())
+
+    def _get_range_bounds(self) -> tuple[float, float]:
+        lower = float(self.range_min_input.value())
+        upper = float(self.range_max_input.value())
+        if lower > upper:
+            raise ValueError("Range minimum cannot be greater than range maximum.")
+        return lower, upper
+
+    def _sync_interval_from_inputs(self):
         try:
-            return float(text)
+            lower, upper = self._get_range_bounds()
         except ValueError:
-            raise ValueError(f"Target '{text}' is not a valid number.")
+            return
+
+        self.interval_min_value = lower
+        self.interval_max_value = upper
+        self._update_interval_lines()
+        self._refresh_interval_summary(self._last_samples)
+        self.figure.canvas.draw_idle()
+
+    def _update_interval_lines(self):
+        if self._histogram_ax is None:
+            return
+        if not self._interval_lines:
+            return
+        self._interval_lines[0].set_xdata([self.interval_min_value, self.interval_min_value])
+        self._interval_lines[1].set_xdata([self.interval_max_value, self.interval_max_value])
+        self._histogram_ax.figure.canvas.draw_idle()
+
+    def _refresh_interval_summary(self, samples):
+        if samples is None or self._last_monte_carlo_payload is None:
+            return
+
+        try:
+            lower, upper = self._get_range_bounds()
+        except ValueError:
+            return
+
+        inside_count, outside_count, inside_percentage, outside_percentage = self._get_interval_stats(samples, lower, upper)
+        model_lines = self._last_monte_carlo_payload["model_lines"]
+        result = self._last_monte_carlo_payload["result"]
+        fit = self._last_monte_carlo_payload["fit"]
+
+        self.result_label.setText(
+            f"Monte Carlo ({len(samples):,} iterations)\n"
+            + "\n".join(model_lines) + "\n"
+            f"{'-' * 30}\n"
+            f"Mean       : {result.mean:.4f}\n"
+            f"Std Dev    : {result.std_dev:.4f}\n"
+            f"Range      : [{lower:.4f}, {upper:.4f}]\n"
+            f"In range   : {inside_count:,}/{len(samples):,} ({inside_percentage:.2f}%)\n"
+            f"Out of range: {outside_count:,}/{len(samples):,} ({outside_percentage:.2f}%)\n"
+            + self._fit_text(fit)
+        )
+
+    def _get_interval_stats(self, samples, lower: float, upper: float):
+        inside_mask = (samples >= lower) & (samples <= upper)
+        inside_count = int(sum(inside_mask))
+        total = int(len(samples))
+        outside_count = total - inside_count
+        inside_percentage = (inside_count / total * 100.0) if total else 0.0
+        outside_percentage = (outside_count / total * 100.0) if total else 0.0
+        return inside_count, outside_count, inside_percentage, outside_percentage
+
+    def _on_histogram_click(self, event):
+        if event.inaxes is None or event.inaxes is not self._histogram_ax or event.button != 1:
+            return
+
+        for index, line in enumerate(self._interval_lines):
+            x_value = line.get_xdata()[0]
+            if x_value is None:
+                continue
+            if abs(event.xdata - x_value) <= 0.03 * max(abs(self._histogram_ax.get_xlim()[1] - self._histogram_ax.get_xlim()[0]), 1.0):
+                self._dragged_line = line
+                self._dragged_line_index = index
+                return
+
+    def _on_histogram_move(self, event):
+        if self._dragged_line is None or event.inaxes is not self._histogram_ax or event.xdata is None:
+            return
+
+        if self._dragged_line_index == 0:
+            self.interval_min_value = float(event.xdata)
+            if self.interval_min_value > self.interval_max_value:
+                self.interval_max_value = self.interval_min_value
+        else:
+            self.interval_max_value = float(event.xdata)
+            if self.interval_max_value < self.interval_min_value:
+                self.interval_min_value = self.interval_max_value
+
+        self._sync_interval_inputs_from_values()
+        self._update_interval_lines()
+        self._refresh_interval_summary(self._last_samples)
+        self.figure.canvas.draw_idle()
+
+    def _on_histogram_release(self, event):
+        self._dragged_line = None
+        self._dragged_line_index = None
+
+    def _sync_interval_inputs_from_values(self):
+        self.range_min_input.blockSignals(True)
+        self.range_max_input.blockSignals(True)
+        self.range_min_input.setValue(self.interval_min_value)
+        self.range_max_input.setValue(self.interval_max_value)
+        self.range_min_input.blockSignals(False)
+        self.range_max_input.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Analysis
@@ -356,7 +535,7 @@ class TolstackWindow(QMainWindow):
     def run_analysis(self):
         try:
             stack = self._build_stack()
-            target = self._get_target()
+            lower, upper = self._get_range_bounds()
         except ValueError as e:
             QMessageBox.warning(self, "Invalid data", str(e))
             return
@@ -369,13 +548,13 @@ class TolstackWindow(QMainWindow):
 
         if method == "worst_case":
             result = stack.worst_case()
-            fit = stack.assess_fit(result, target=target)
+            fit = stack.assess_fit(result, target=0.0)
             self._show_stack_result(result, fit)
             self.canvas.setVisible(False)
 
         elif method == "rss":
             result = stack.rss()
-            fit = stack.assess_fit(result, target=target)
+            fit = stack.assess_fit(result, target=0.0)
             self._show_stack_result(result, fit)
             self.canvas.setVisible(False)
 
@@ -386,33 +565,25 @@ class TolstackWindow(QMainWindow):
                 QMessageBox.warning(self, "Invalid global Cpk", str(e))
                 return
 
-            result = stack.monte_carlo(default_cpk=default_cpk)
-            fit = stack.assess_fit(result, target=target)
+            iterations = self._get_iterations()
+            result = stack.monte_carlo(iterations=iterations, default_cpk=default_cpk)
+            fit = stack.assess_fit(result, target=0.0)
 
-            # Show which model was used per dimension, so it's never a surprise
             model_lines = []
             for d in stack.dimensions:
                 cpk = d.cpk if d.cpk is not None else default_cpk
                 model = f"Cpk={cpk}" if cpk is not None else "uniform"
                 model_lines.append(f"  {d.name}: {model}")
 
-            self.result_label.setText(
-                f"Monte Carlo (10,000 iterations)\n"
-                + "\n".join(model_lines) + "\n"
-                f"{'-' * 30}\n"
-                f"Mean       : {result.mean:.4f}\n"
-                f"Std Dev    : {result.std_dev:.4f}\n"
-                f"Minimum    : {result.minimum:.4f}\n"
-                f"Maximum    : {result.maximum:.4f}\n"
-                + self._fit_text(fit)
-            )
+            self._last_samples = result.samples
+            self._last_monte_carlo_payload = {"model_lines": model_lines, "result": result, "fit": fit}
             self._plot_histogram(result.samples)
+            self._refresh_interval_summary(result.samples)
             self.canvas.setVisible(True)
 
     def _fit_text(self, fit) -> str:
         lines = [
             f"{'-' * 30}",
-            f"Target       : {fit.target:.4f}",
             f"Verdict      : {fit.verdict.upper()}",
             f"Margin (min) : {fit.margin_min:+.4f}",
             f"Margin (max) : {fit.margin_max:+.4f}",
@@ -439,6 +610,11 @@ class TolstackWindow(QMainWindow):
         ax.set_title("Monte Carlo distribution")
         ax.set_xlabel("Value")
         ax.set_ylabel("Frequency")
+        self._histogram_ax = ax
+        self._interval_lines = [
+            ax.axvline(self.interval_min_value, color="#1f77b4", linestyle="--", linewidth=1.8),
+            ax.axvline(self.interval_max_value, color="#ff7f0e", linestyle="--", linewidth=1.8),
+        ]
         self.figure.tight_layout()
         self.canvas.draw()
 

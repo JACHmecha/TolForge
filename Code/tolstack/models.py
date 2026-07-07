@@ -28,7 +28,7 @@ class Dimension:
     nominal: float
     tol_plus: float
     tol_minus: float
-    sign: int = 1
+    sign: str = "+"
     cpk: float | None = None
 
 
