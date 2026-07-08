@@ -14,6 +14,8 @@ Run with:
     python gui/app.py
 """
 
+import importlib
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -30,9 +32,29 @@ from PySide6.QtCore import Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
+from compas.colors import Color
+from compas.geometry import Box, Frame, Point
+
+try:
+    from compas_viewer.renderer import Renderer
+except Exception:  # pragma: no cover - optional dependency guard
+    Renderer = None
+
 from tolstack import Stack, Dimension, DimensionBank, DimensionTemplate, MonteCarloResult
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+/-)", "Cpk (optional)"]
+
+
+def detect_step_backend() -> tuple[str | None, str]:
+    """Return the optional CAD backend name and a user-facing status message."""
+    for module_name in ("compas_occ", "OCP", "occ", "cadquery", "ifcopenshell"):
+        if importlib.util.find_spec(module_name):
+            return module_name, f"Detected optional CAD backend '{module_name}'."
+
+    return None, (
+        "STEP preview is available, but the optional CAD backend is not installed. "
+        "Install one of: compas_occ, OCP, cadquery, or ifcopenshell."
+    )
 
 
 class TolstackWindow(QMainWindow):
@@ -50,6 +72,8 @@ class TolstackWindow(QMainWindow):
         self._dragged_line_index = None
         self._last_samples = None
         self._last_monte_carlo_payload = None
+        self._step_preview_widget = None
+        self._step_preview_renderer = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -177,6 +201,32 @@ class TolstackWindow(QMainWindow):
         self.figure.canvas.mpl_connect("motion_notify_event", self._on_histogram_move)
         self.figure.canvas.mpl_connect("button_release_event", self._on_histogram_release)
         right_panel.addWidget(self.canvas)
+
+        step_box = QGroupBox("STEP preview")
+        step_layout = QVBoxLayout()
+        self.step_status_label = QLabel("No STEP file loaded yet.")
+        self.step_status_label.setWordWrap(True)
+        self.step_status_label.setStyleSheet("font-size: 11px;")
+        step_layout.addWidget(self.step_status_label)
+
+        step_buttons = QHBoxLayout()
+        load_step_btn = QPushButton("Load STEP")
+        load_step_btn.clicked.connect(self.load_step_file)
+        clear_step_btn = QPushButton("Clear")
+        clear_step_btn.clicked.connect(self.clear_step_preview)
+        step_buttons.addWidget(load_step_btn)
+        step_buttons.addWidget(clear_step_btn)
+        step_layout.addLayout(step_buttons)
+
+        self.step_preview_container = QWidget()
+        self.step_preview_container.setMinimumHeight(240)
+        self.step_preview_container.setStyleSheet("border: 1px solid #cccccc; border-radius: 4px; background-color: #f8f8f8;")
+        self.step_preview_layout = QVBoxLayout(self.step_preview_container)
+        self.step_preview_layout.setContentsMargins(6, 6, 6, 6)
+        self._show_step_preview_placeholder()
+        step_layout.addWidget(self.step_preview_container)
+        step_box.setLayout(step_layout)
+        right_panel.addWidget(step_box)
 
         root_layout.addLayout(right_panel, stretch=3)
 
@@ -617,6 +667,80 @@ class TolstackWindow(QMainWindow):
         ]
         self.figure.tight_layout()
         self.canvas.draw()
+
+    # ------------------------------------------------------------------
+    # STEP preview
+    # ------------------------------------------------------------------
+
+    def load_step_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load STEP file", "", "STEP files (*.step *.stp)"
+        )
+        if not path:
+            return
+
+        backend_name, backend_message = detect_step_backend()
+        self.step_status_label.setText(
+            f"Selected: {Path(path).name}\n{backend_message}"
+        )
+
+        if backend_name is None:
+            self._show_step_preview_placeholder(
+                "The STEP file was selected, but a compatible CAD backend is not available in this environment."
+            )
+            return
+
+        self._show_step_preview_placeholder(
+            f"STEP preview is ready for {Path(path).name}. A COMPAS viewer widget is embedded here."
+        )
+        self._render_placeholder_geometry()
+
+    def clear_step_preview(self):
+        self.step_status_label.setText("No STEP file loaded yet.")
+        self._show_step_preview_placeholder()
+
+    def _show_step_preview_placeholder(self, message: str | None = None):
+        self._clear_step_preview_widget()
+        placeholder = QLabel(message or "Use the button above to preview a STEP file.")
+        placeholder.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+        placeholder.setWordWrap(True)
+        placeholder.setStyleSheet("color: #666666;")
+        self.step_preview_layout.addWidget(placeholder)
+
+    def _clear_step_preview_widget(self):
+        layout = self.step_preview_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _render_placeholder_geometry(self):
+        if Renderer is None:
+            self._show_step_preview_placeholder(
+                "The COMPAS viewer renderer is not available in this environment."
+            )
+            return
+
+        self._clear_step_preview_widget()
+        try:
+            self._step_preview_renderer = Renderer()
+            self._step_preview_renderer.setMinimumHeight(220)
+            self._step_preview_renderer.setMinimumWidth(220)
+            self.step_preview_layout.addWidget(self._step_preview_renderer)
+
+            scene = self._step_preview_renderer.scene
+            box = Box(Frame(Point(0.0, 0.0, 0.0), [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), 1.0, 1.0, 1.0)
+            scene.add(
+                box,
+                show_faces=True,
+                show_lines=True,
+                facecolor=Color.from_hex("#4c78a8"),
+                linecolor=Color.from_hex("#1f2d3d"),
+            )
+            self._step_preview_renderer.update()
+        except Exception as exc:  # pragma: no cover - runtime environment specific
+            self._show_step_preview_placeholder(f"Could not initialize the 3D preview: {exc}")
 
 
 def main():
