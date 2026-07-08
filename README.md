@@ -1,102 +1,106 @@
 # TolForge
 
-A tool for tolerance stack-up analysis using three methods: Worst Case, RSS
-(Root Sum Squares), and Monte Carlo.
-
-Includes a desktop GUI (PySide6) to build a dimension chain and run all
-three methods without touching code.
+TolForge is a desktop-first tolerance stack-up analysis tool for Worst Case,
+RSS, and Monte Carlo studies. It combines a PySide6 GUI with a reusable
+Python backend so you can build a dimension chain, compare methods, and
+inspect the Monte Carlo distribution without writing code.
 
 ## Structure
 
 ```
 Code/
 ├── tolstack/
-│   ├── __init__.py     # Public API: Stack, Dimension, StackResult, MonteCarloResult; no import-time test/demo execution
-│   ├── models.py       # Pure data models (no logic)
-│   └── stack.py        # Calculation logic (Stack class)
+│   ├── __init__.py     # Public package API
+│   ├── models.py       # Dimension and result models
+│   └── stack.py        # Stack calculation logic
 ├── examples/
-│   └── basic_usage.py  # Runnable console example
+│   └── basic_usage.py  # Console example
 ├── gui/
-│   └── app.py           # Desktop GUI
-└── main.py             # Quick entry point (console)
+│   └── app.py          # Desktop GUI
+└── main.py            # Quick console entry point
 ```
 
 ## Installation
 
 ```bash
-git clone https://github.com/JACHmecha/3D-tolerance-stack-up-tool.git
-cd 3D-tolerance-stack-up-tool
+git clone https://github.com/JACHmecha/TolForge.git
+cd TolForge
 pip install -r requirements.txt
 ```
 
-## Packaging and installer
+To launch the desktop app:
 
-For Windows, the repository includes a helper script to build a standalone
-executable bundle using PyInstaller.
+```bash
+python Code/gui/app.py
+```
+
+## Packaging and distribution
+
+### Windows executable
+
+The repository includes a PyInstaller spec file and a helper script for
+building a single-file Windows executable.
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\build_installer.ps1
 ```
 
-This will install PyInstaller if needed and generate a single-file
-executable under `dist\TolForge.exe`.
+This produces a bundled app at `dist/TolForge.exe`.
 
-You can also install the application from source as a Python package:
+You can also build it directly with:
 
-```bash
-cd Code
-pip install .
+```powershell
+python -m PyInstaller --noconfirm --clean --distpath dist --workpath build TolForge.spec
 ```
 
-That makes the GUI entry point available as the `tolforge` command on
-Windows when installed into the active Python environment.
+### GitHub release automation
+
+A GitHub Actions workflow is included to build the Windows executable when a
+release is published and upload it as a release asset.
 
 ## Usage
 
 ### Desktop GUI
 
 ```bash
-cd Code
-python gui/app.py
+python Code/gui/app.py
 ```
 
 The GUI lets you build and analyze a tolerance chain from a table of
-dimensions, then compare the result against a target using one of three
-methods.
+rows, then compare the result against a target using one of three methods.
 
 Key features:
-- Editable dimension rows: `Name`, `Nominal`, `Tol +`, `Tol -`, `Sign`, and
-  optional `Cpk`.
-- Dimension bank: save the selected row as a reusable template, add bank
-  entries to the current stack with a chosen sign, and persist/load banks
-  from JSON files.
-- Analysis controls: choose `worst_case`, `rss`, or `monte_carlo`, set a
-  global `Cpk` fallback, and enter a target value for fit assessment.
-- Fit assessment: the app compares results against the target and reports
-  `gap`, `interference`, or `mixed`; Monte Carlo also shows the probability
-  of interference.
+- Editable rows for name, nominal, tolerance limits, sign, and optional Cpk.
+- A sign toggle per row using a green/red switch for positive/negative
+  contribution.
+- A legend describing the green/red sign state.
+- A dimension bank for saving reusable templates and loading/saving bank
+  data as JSON.
+- Analysis controls for `worst_case`, `rss`, or `monte_carlo`, plus a
+  global Cpk fallback and target-based fit assessment.
+- Monte Carlo interval analysis with draggable vertical guides, configurable
+  iteration count, and in-range/out-of-range percentages.
 
-Worst Case and RSS show numeric summary values, while Monte Carlo also
-renders a histogram of the resulting distribution.
+Worst Case and RSS show deterministic summary values. Monte Carlo also
+renders a histogram of the resulting distribution and summarises the
+interval coverage.
 
-**Monte Carlo model per dimension:**
-- Empty "Cpk" cell → uniform sampling across the full tolerance range
-  (the most pessimistic scenario, doesn't represent a real process).
-- "Cpk" cell with a value (e.g. 1.33) → split normal distribution,
-  calibrated so the tolerance limit sits at `3 × Cpk` standard deviations
+### Monte Carlo model per dimension
+
+- Empty `Cpk` cell → uniform sampling across the full tolerance range.
+- `Cpk` cell with a value (for example `1.33`) → split-normal sampling,
+  calibrated so the tolerance limit sits at $3 \times Cpk$ standard deviations
   from nominal.
-- "Global Cpk" field next to the Calculate button → applies that Cpk to
-  any dimension that doesn't have its own value in the table.
+- Global `Cpk` field → applies that value to any dimension without its own
+  Cpk entry.
 
-The Monte Carlo result explicitly lists which model was used for each
-dimension, so it's never ambiguous which statistical assumption produced
-the histogram.
+The Monte Carlo summary explicitly lists which model was used for each
+row, so the assumption behind the histogram is always visible.
 
 > **Note:** the three tolerance methods produce different bounds from the
-> same input stack (Base/Spacer/Bearing below). That spread — Worst Case
-> vs. RSS vs. Monte Carlo — is the actual point of doing this kind of
-> analysis instead of picking one method by default.
+> same input stack. That spread — Worst Case vs. RSS vs. Monte Carlo — is
+> the value of using more than one analysis method.
 
 | Worst Case | RSS | Monte Carlo |
 |---|---|---|
@@ -105,9 +109,8 @@ the histogram.
 ### Console
 
 ```bash
-cd Code
-python main.py
-python examples/basic_usage.py
+python Code/main.py
+python Code/examples/basic_usage.py
 ```
 
 ### As a library
@@ -116,34 +119,19 @@ python examples/basic_usage.py
 from tolstack import Stack, Dimension
 
 stack = Stack()
-stack.add_dimension(Dimension(name="Base", nominal=25.0, tol_plus=0.10, tol_minus=0.05))
+stack.add_dimension(Dimension(name="Base", nominal=25.0, tol_plus=0.10, tol_minus=0.05, sign="+"))
 stack.add_dimension(Dimension(
-    name="Bearing", nominal=40.0, tol_plus=0.20, tol_minus=0.10, sign=-1, cpk=1.33
+    name="Bearing", nominal=40.0, tol_plus=0.20, tol_minus=0.10, sign="-", cpk=1.33
 ))
 
 stack.summary(method="rss")  # or "worst_case" / "monte_carlo"
 ```
 
-## Migration notes (single script → package)
+## Notes
 
-- `method` in `summary()` is now normalized to lowercase and validated
-  against a list of allowed methods, raising `ValueError` if it doesn't
-  match (previously: passing `"Monte_Carlo"` with mixed case caused a
-  silent `NameError` because `result` was never assigned).
-- The usage example moved to `Code/examples/basic_usage.py`, outside the
-  library, so `tolstack` can be imported without running example code.
-- The original Monte Carlo only supported uniform sampling, which
-  implicitly assumes the worst-case process capability. `Dimension` now
-  accepts an optional `cpk` to sample from a split normal distribution
-  instead of uniform (see the GUI section above for details).
-
-## Known gaps
-
-- `tolstack/models.py` and `tolstack/stack.py` still have docstrings and
-  comments in Spanish; `gui/app.py` is already in English. The repo is in
-  a mixed-language state until someone decides whether to translate the
-  backend too.
-
-## License
+- The backend now uses `+` and `-` sign values consistently.
+- Monte Carlo sampling now supports both uniform and split-normal behavior.
+- The GUI has been updated for easier sign editing, clearer results, and
+  interval-focused Monte Carlo inspection.
 
 Apache License 2.0 — see [LICENSE](LICENSE).
