@@ -1,5 +1,8 @@
 name: Build release executable
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   release:
@@ -29,7 +32,8 @@ jobs:
           python -m PyInstaller --noconfirm --clean --distpath dist --workpath build TolForge.spec
 
       - name: Upload executable to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/TolForge.exe
-          fail_on_unmatched_files: true
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" dist/TolForge.exe --clobber
