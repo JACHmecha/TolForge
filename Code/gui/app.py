@@ -33,7 +33,6 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
 from compas.colors import Color
-from compas.geometry import Box, Frame, Point
 
 try:
     from compas_viewer.renderer import Renderer
@@ -46,14 +45,28 @@ COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+/-)", "Cpk (optional)"]
 
 
 def detect_step_backend() -> tuple[str | None, str]:
-    """Return the optional CAD backend name and a user-facing status message."""
-    for module_name in ("compas_occ", "OCP", "occ", "cadquery", "ifcopenshell"):
-        if importlib.util.find_spec(module_name):
-            return module_name, f"Detected optional CAD backend '{module_name}'."
+    """Return the optional CAD backend name and a user-facing status message.
+
+    Only compas_occ is treated as "ready" here: it is the only one of these
+    that returns COMPAS-native geometry (OCCBrep), which is what the embedded
+    compas_viewer Renderer can add to its scene. The others may exist in the
+    environment but would need a separate conversion path that isn't
+    implemented, so we report them as detected-but-unsupported rather than
+    silently pretending the preview will work.
+    """
+    if importlib.util.find_spec("compas_occ"):
+        return "compas_occ", "Detected compas_occ (OpenCascade) backend for STEP preview."
+
+    other_found = [m for m in ("OCP", "occ", "cadquery", "ifcopenshell") if importlib.util.find_spec(m)]
+    if other_found:
+        return None, (
+            f"Found {', '.join(other_found)}, but STEP preview currently requires compas_occ "
+            "specifically. Install it with: conda install -c conda-forge compas_occ"
+        )
 
     return None, (
-        "STEP preview is available, but the optional CAD backend is not installed. "
-        "Install one of: compas_occ, OCP, cadquery, or ifcopenshell."
+        "STEP preview requires the compas_occ backend (COMPAS's OpenCascade wrapper), which is "
+        "not installed. Install it with: conda install -c conda-forge compas_occ"
     )
 
 
@@ -690,10 +703,7 @@ class TolstackWindow(QMainWindow):
             )
             return
 
-        self._show_step_preview_placeholder(
-            f"STEP preview is ready for {Path(path).name}. A COMPAS viewer widget is embedded here."
-        )
-        self._render_placeholder_geometry()
+        self._render_step_geometry(path)
 
     def clear_step_preview(self):
         self.step_status_label.setText("No STEP file loaded yet.")
@@ -715,11 +725,36 @@ class TolstackWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
 
-    def _render_placeholder_geometry(self):
+    def _render_step_geometry(self, path: str):
+        """Load a STEP file via compas_occ and render it in the embedded viewer.
+
+        Reading is a two-step process: OCCBrep.from_step() parses the STEP
+        file's B-rep data (exact NURBS surfaces/curves, not a mesh), then
+        to_viewmesh() tessellates that B-rep into a triangulated Mesh (plus
+        edge polylines) suitable for OpenGL rendering. compas_viewer's scene
+        can technically add an OCCBrep directly, but tessellating explicitly
+        here keeps this working the same way across compas_viewer versions
+        and gives us face/vertex counts to show the user.
+        """
         if Renderer is None:
             self._show_step_preview_placeholder(
                 "The COMPAS viewer renderer is not available in this environment."
             )
+            return
+
+        try:
+            from compas_occ.brep import OCCBrep
+        except ImportError as exc:
+            self._show_step_preview_placeholder(f"compas_occ could not be imported: {exc}")
+            return
+
+        try:
+            # heal=True fixes small gaps/discontinuities that are common in
+            # STEP files exported from different CAD packages.
+            brep = OCCBrep.from_step(path, heal=True)
+            mesh, edges = brep.to_viewmesh()
+        except Exception as exc:
+            self._show_step_preview_placeholder(f"Failed to read/tessellate the STEP file: {exc}")
             return
 
         self._clear_step_preview_widget()
@@ -730,21 +765,39 @@ class TolstackWindow(QMainWindow):
             self.step_preview_layout.addWidget(self._step_preview_renderer)
 
             scene = self._step_preview_renderer.scene
-            box = Box(Frame(Point(0.0, 0.0, 0.0), [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), 1.0, 1.0, 1.0)
             scene.add(
-                box,
+                mesh,
                 show_faces=True,
                 show_lines=True,
                 facecolor=Color.from_hex("#4c78a8"),
                 linecolor=Color.from_hex("#1f2d3d"),
             )
             self._step_preview_renderer.update()
+            self.step_status_label.setText(
+                f"Loaded: {Path(path).name}\n"
+                f"Faces: {mesh.number_of_faces()}  Vertices: {mesh.number_of_vertices()}"
+            )
         except Exception as exc:  # pragma: no cover - runtime environment specific
             self._show_step_preview_placeholder(f"Could not initialize the 3D preview: {exc}")
 
 
 def main():
-    app = QApplication(sys.argv)
+    # compas_viewer's Renderer widget internally accesses a Viewer() singleton
+    # (via compas_viewer.base.Base.viewer), and Viewer.__init__ unconditionally
+    # creates its own QApplication(sys.argv) the first time it's instantiated.
+    # Since Viewer is a true singleton (__init__ only runs once, see
+    # compas_viewer.singleton.SingletonMeta), we let IT create the one and
+    # only QApplication here, then reuse that same instance for our own
+    # QMainWindow. If we instead created our own QApplication first, the
+    # first Renderer() we embed would try to spin up a second QApplication
+    # and crash with a shiboken "destroy the QApplication singleton" error.
+    try:
+        from compas_viewer.viewer import Viewer
+        Viewer()  # triggers QApplication creation; safe no-op on repeat calls
+        app = QApplication.instance()
+    except Exception:
+        app = QApplication.instance() or QApplication(sys.argv)
+
     window = TolstackWindow()
     window.show()
     sys.exit(app.exec())
