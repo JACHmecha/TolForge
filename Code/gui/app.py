@@ -9,33 +9,74 @@ Window layout:
 - Analysis controls: method, global Cpk, target (for gap/interference)
 - Results panel: text + histogram (matplotlib) for Monte Carlo, plus a
   fit assessment (gap / interference / mixed) against the target
+- STEP preview: load a STEP file via compas_occ and view/select its
+  faces, edges, and vertices in an embedded 3D viewport
+
+This file is intentionally slim: the actual logic lives in mixins in this
+same package (step_viewer_mixin.py, dimension_bank_mixin.py,
+analysis_mixin.py) and the 3D viewport widget in step_renderer.py. This
+file only builds the UI layout and wires widgets to the methods those
+mixins provide.
 
 Run with:
     python gui/app.py
 """
 
+import os
 import sys
 from pathlib import Path
+
+# Windows-only: Python 3.8+ no longer searches PATH for the DLLs a C-extension
+# depends on (a deliberate security change). If compas_occ was built from
+# source against a manually-built OCCT (rather than the conda-forge prebuilt
+# package), OCCT's DLLs live in a location Python won't find on its own, so
+# we register them explicitly before compas_occ ever gets imported. STEP
+# reading specifically (OCC.Core.STEPControl) transitively needs FreeType and
+# TCL/TK runtime DLLs in addition to OCCT's own toolkits - found via
+# `dumpbin /dependents` tracing, since the basic gp/math modules load fine
+# without them but STEPControl does not. These paths are specific to a
+# from-source OCCT build and won't exist/won't be needed on machines using
+# the conda-forge compas_occ package instead.
+#
+# NOTE: this app must be run with the Python 3.10 interpreter at
+# D:\PROGRAMS\PYTHON\python.exe - compas_viewer is not compatible with
+# Python 3.14 (its Config class breaks under Python 3.14's new lazy
+# annotation evaluation, PEP 649), so pythonocc-core/compas_occ/compas_viewer
+# were all installed against 3.10 specifically, not whatever `python`
+# happens to resolve to on PATH.
+if os.name == "nt":
+    for _dll_dir in (
+        r"D:\GIT\REPOS\occt-install\win64\vc14\bin",
+        r"D:\GIT\REPOS\3rdparty-vc14-64\3rdparty-vc14-64\freetype-2.13.3-x64\bin",
+        r"D:\GIT\REPOS\3rdparty-vc14-64\3rdparty-vc14-64\tcltk-8.6.15-x64\bin",
+    ):
+        if Path(_dll_dir).is_dir():
+            os.add_dll_directory(_dll_dir)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox,
-    QMessageBox, QGroupBox, QHeaderView, QLineEdit, QFileDialog,
-    QInputDialog, QCheckBox, QDoubleSpinBox, QSpinBox
+    QTableWidget, QPushButton, QLabel, QComboBox,
+    QGroupBox, QHeaderView, QLineEdit,
+    QCheckBox, QDoubleSpinBox, QSpinBox
 )
 from PySide6.QtCore import Qt
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
-from tolstack import Stack, Dimension, DimensionBank, DimensionTemplate, MonteCarloResult
+from tolstack import DimensionBank
+
+from gui.step_renderer import Renderer, detect_step_backend  # noqa: F401 - re-exported for tests/back-compat
+from gui.step_viewer_mixin import StepViewerMixin
+from gui.dimension_bank_mixin import DimensionBankMixin
+from gui.analysis_mixin import AnalysisMixin
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+/-)", "Cpk (optional)"]
 
 
-class TolstackWindow(QMainWindow):
+class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Tol-Forge: Tolerance Stack Analysis")
@@ -50,6 +91,9 @@ class TolstackWindow(QMainWindow):
         self._dragged_line_index = None
         self._last_samples = None
         self._last_monte_carlo_payload = None
+        self._step_preview_widget = None
+        self._step_preview_renderer = None
+        self._step_entity_info = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -178,449 +222,56 @@ class TolstackWindow(QMainWindow):
         self.figure.canvas.mpl_connect("button_release_event", self._on_histogram_release)
         right_panel.addWidget(self.canvas)
 
+        step_box = QGroupBox("STEP preview")
+        step_layout = QVBoxLayout()
+        self.step_status_label = QLabel("No STEP file loaded yet.")
+        self.step_status_label.setWordWrap(True)
+        self.step_status_label.setStyleSheet("font-size: 11px;")
+        step_layout.addWidget(self.step_status_label)
+
+        step_buttons = QHBoxLayout()
+        load_step_btn = QPushButton("Load STEP")
+        load_step_btn.clicked.connect(self.load_step_file)
+        clear_step_btn = QPushButton("Clear")
+        clear_step_btn.clicked.connect(self.clear_step_preview)
+        step_buttons.addWidget(load_step_btn)
+        step_buttons.addWidget(clear_step_btn)
+        step_layout.addLayout(step_buttons)
+
+        self.step_preview_container = QWidget()
+        self.step_preview_container.setMinimumHeight(240)
+        self.step_preview_container.setStyleSheet("border: 1px solid #cccccc; border-radius: 4px; background-color: #f8f8f8;")
+        self.step_preview_layout = QVBoxLayout(self.step_preview_container)
+        self.step_preview_layout.setContentsMargins(6, 6, 6, 6)
+        self._init_step_preview_renderer()
+        step_layout.addWidget(self.step_preview_container)
+        step_box.setLayout(step_layout)
+        right_panel.addWidget(step_box)
+
         root_layout.addLayout(right_panel, stretch=3)
 
         # Seed example row + bank so the GUI doesn't start empty
         self._seed_example()
         self._seed_bank()
 
-    # ------------------------------------------------------------------
-    # Seed data
-    # ------------------------------------------------------------------
-
-    def _seed_example(self):
-        # cpk="" leaves the row in uniform mode; a row with cpk set shows
-        # what a dimension with a known manufacturing process looks like.
-        for name, nominal, tol_plus, tol_minus, sign, cpk in [
-            ("Base", 25.0, 0.10, 0.05, "+", ""),
-            ("Spacer", 12.5, 0.05, 0.05, "+", "1.33"),
-            ("Bearing", 40.0, 0.20, 0.10, "-", ""),
-        ]:
-            self.add_row()
-            r = self.table.rowCount() - 1
-            values = [name, nominal, tol_plus, tol_minus, sign, cpk]
-            for c, v in enumerate(values):
-                if c == 4:
-                    self._set_sign_switch(r, v)
-                else:
-                    self.table.setItem(r, c, QTableWidgetItem(str(v)))
-
-    def _seed_bank(self):
-        for name, nominal, tol_plus, tol_minus, cpk in [
-            ("Base", 25.0, 0.10, 0.05, None),
-            ("Spacer", 12.5, 0.05, 0.05, 1.33),
-            ("Bearing", 40.0, 0.20, 0.10, None),
-        ]:
-            self.bank.add(DimensionTemplate(
-                name=name, nominal=nominal,
-                tol_plus=tol_plus, tol_minus=tol_minus, cpk=cpk
-            ))
-        self._refresh_bank_combo()
-
-    # ------------------------------------------------------------------
-    # Table row management
-    # ------------------------------------------------------------------
-
-    def add_row(self):
-        self.table.insertRow(self.table.rowCount())
-        self._set_sign_switch(self.table.rowCount() - 1, "+")
-
-    def remove_row(self):
-        row = self.table.currentRow()
-        if row >= 0:
-            self.table.removeRow(row)
-
-    def _set_sign_switch(self, row: int, sign: str | int):
-        checkbox = QCheckBox()
-        checkbox.setChecked(sign in {1, "+"})
-        checkbox.setToolTip("Toggle the dimension sign")
-        checkbox.setStyleSheet(
-            "QCheckBox { padding: 2px; }"
-            "QCheckBox::indicator { width: 34px; height: 18px; border-radius: 9px; border: 1px solid #777; background: #f44336; color: white; font-weight: bold; }"
-            "QCheckBox::indicator:checked { background: #4caf50; }"
-            "QCheckBox::indicator:checked::before { content: '+'; }"
-            "QCheckBox::indicator:unchecked::before { content: '-'; }"
-        )
-        self.table.setCellWidget(row, 4, checkbox)
-
-    def _get_sign_from_row(self, row: int) -> str:
-        widget = self.table.cellWidget(row, 4)
-        if isinstance(widget, QCheckBox):
-            return "+" if widget.isChecked() else "-"
-
-        item = self.table.item(row, 4)
-        if item is None:
-            return "+"
-
-        text = item.text().strip()
-        if text in {"+", "1", "+1"}:
-            return "+"
-        if text in {"-", "-1"}:
-            return "-"
-        raise ValueError(f"Row {row + 1}: sign must be '+' or '-', not {text}.")
-
-    def _add_table_row(self, name, nominal, tol_plus, tol_minus, sign, cpk):
-        self.add_row()
-        r = self.table.rowCount() - 1
-        cpk_text = "" if cpk is None else str(cpk)
-        values = [name, nominal, tol_plus, tol_minus, sign, cpk_text]
-        for c, v in enumerate(values):
-            if c == 4:
-                self._set_sign_switch(r, v)
-            else:
-                self.table.setItem(r, c, QTableWidgetItem(str(v)))
-
-    # ------------------------------------------------------------------
-    # Dimension bank
-    # ------------------------------------------------------------------
-
-    def _refresh_bank_combo(self):
-        self.bank_combo.clear()
-        self.bank_combo.addItems(self.bank.names())
-
-    def add_from_bank(self):
-        name = self.bank_combo.currentText()
-        if not name:
-            QMessageBox.warning(self, "Empty bank", "The bank has no entries to add.")
-            return
-
-        sign_text, ok = QInputDialog.getItem(
-            self, "Sign in this stack",
-            f"Sign for '{name}' in the current stack:",
-            ["+", "-"], 0, False
-        )
-        if not ok:
-            return
-
-        sign = "+" if sign_text == "+" else "-"
-        template = self.bank.get(name)
-        self._add_table_row(
-            template.name, template.nominal, template.tol_plus,
-            template.tol_minus, sign, template.cpk
-        )
-
-    def save_row_to_bank(self):
-        row = self.table.currentRow()
-        if row < 0:
-            QMessageBox.warning(self, "No row selected", "Select a row in the table first.")
-            return
-
-        try:
-            name = self.table.item(row, 0).text().strip()
-            nominal = float(self.table.item(row, 1).text())
-            tol_plus = float(self.table.item(row, 2).text())
-            tol_minus = float(self.table.item(row, 3).text())
-        except (AttributeError, ValueError):
-            QMessageBox.warning(self, "Invalid row", "This row has invalid or incomplete data.")
-            return
-
-        cpk_item = self.table.item(row, 5)
-        cpk_text = cpk_item.text().strip() if cpk_item else ""
-        cpk = None
-        if cpk_text:
-            try:
-                cpk = float(cpk_text)
-            except ValueError:
-                QMessageBox.warning(self, "Invalid Cpk", f"Cpk '{cpk_text}' is not a valid number.")
-                return
-
-        template = DimensionTemplate(
-            name=name, nominal=nominal, tol_plus=tol_plus, tol_minus=tol_minus, cpk=cpk
-        )
-
-        if name in self.bank.names():
-            choice = QMessageBox.question(
-                self, "Overwrite entry",
-                f"'{name}' already exists in the bank. Overwrite it?"
-            )
-            if choice != QMessageBox.Yes:
-                return
-            self.bank.add(template, overwrite=True)
-        else:
-            self.bank.add(template)
-
-        self._refresh_bank_combo()
-
-    def remove_from_bank(self):
-        name = self.bank_combo.currentText()
-        if not name:
-            return
-        self.bank.remove(name)
-        self._refresh_bank_combo()
-
-    def load_bank_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load bank", "", "JSON files (*.json)")
-        if not path:
-            return
-        try:
-            self.bank = DimensionBank.load(path)
-        except Exception as e:
-            QMessageBox.warning(self, "Could not load bank", str(e))
-            return
-        self._refresh_bank_combo()
-
-    def save_bank_file(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save bank", "bank.json", "JSON files (*.json)")
-        if not path:
-            return
-        try:
-            self.bank.save(path)
-        except Exception as e:
-            QMessageBox.warning(self, "Could not save bank", str(e))
-
-    # ------------------------------------------------------------------
-    # Stack construction from the table
-    # ------------------------------------------------------------------
-
-    def _build_stack(self) -> Stack:
-        stack = Stack()
-        for r in range(self.table.rowCount()):
-            try:
-                name = self.table.item(r, 0).text().strip()
-                nominal = float(self.table.item(r, 1).text())
-                tol_plus = float(self.table.item(r, 2).text())
-                tol_minus = float(self.table.item(r, 3).text())
-                sign = self._get_sign_from_row(r)
-            except (AttributeError, ValueError):
-                raise ValueError(f"Row {r + 1} has invalid or incomplete data.")
-
-            if sign not in {"+", "-"}:
-                raise ValueError(f"Row {r + 1}: sign must be '+' or '-', not {sign}.")
-
-            # Cpk column is optional: empty or missing cell -> None (uniform)
-            cpk_item = self.table.item(r, 5)
-            cpk_text = cpk_item.text().strip() if cpk_item else ""
-            if cpk_text == "":
-                cpk = None
-            else:
-                try:
-                    cpk = float(cpk_text)
-                except ValueError:
-                    raise ValueError(f"Row {r + 1}: Cpk '{cpk_text}' is not a valid number.")
-                if cpk <= 0:
-                    raise ValueError(f"Row {r + 1}: Cpk must be greater than 0, not {cpk}.")
-
-            stack.add_dimension(Dimension(
-                name=name, nominal=nominal,
-                tol_plus=tol_plus, tol_minus=tol_minus, sign=sign, cpk=cpk
-            ))
-        return stack
-
-    def _get_default_cpk(self) -> float | None:
-        """Reads the global Cpk field. Empty -> None (no default, falls back to uniform)."""
-        text = self.default_cpk_input.text().strip()
-        if text == "":
-            return None
-        try:
-            value = float(text)
-        except ValueError:
-            raise ValueError(f"Global Cpk '{text}' is not a valid number.")
-        if value <= 0:
-            raise ValueError(f"Global Cpk must be greater than 0, not {value}.")
-        return value
-
-    def _get_iterations(self) -> int:
-        return int(self.iterations_input.value())
-
-    def _get_range_bounds(self) -> tuple[float, float]:
-        lower = float(self.range_min_input.value())
-        upper = float(self.range_max_input.value())
-        if lower > upper:
-            raise ValueError("Range minimum cannot be greater than range maximum.")
-        return lower, upper
-
-    def _sync_interval_from_inputs(self):
-        try:
-            lower, upper = self._get_range_bounds()
-        except ValueError:
-            return
-
-        self.interval_min_value = lower
-        self.interval_max_value = upper
-        self._update_interval_lines()
-        self._refresh_interval_summary(self._last_samples)
-        self.figure.canvas.draw_idle()
-
-    def _update_interval_lines(self):
-        if self._histogram_ax is None:
-            return
-        if not self._interval_lines:
-            return
-        self._interval_lines[0].set_xdata([self.interval_min_value, self.interval_min_value])
-        self._interval_lines[1].set_xdata([self.interval_max_value, self.interval_max_value])
-        self._histogram_ax.figure.canvas.draw_idle()
-
-    def _refresh_interval_summary(self, samples):
-        if samples is None or self._last_monte_carlo_payload is None:
-            return
-
-        try:
-            lower, upper = self._get_range_bounds()
-        except ValueError:
-            return
-
-        inside_count, outside_count, inside_percentage, outside_percentage = self._get_interval_stats(samples, lower, upper)
-        model_lines = self._last_monte_carlo_payload["model_lines"]
-        result = self._last_monte_carlo_payload["result"]
-        fit = self._last_monte_carlo_payload["fit"]
-
-        self.result_label.setText(
-            f"Monte Carlo ({len(samples):,} iterations)\n"
-            + "\n".join(model_lines) + "\n"
-            f"{'-' * 30}\n"
-            f"Mean       : {result.mean:.4f}\n"
-            f"Std Dev    : {result.std_dev:.4f}\n"
-            f"Range      : [{lower:.4f}, {upper:.4f}]\n"
-            f"In range   : {inside_count:,}/{len(samples):,} ({inside_percentage:.2f}%)\n"
-            f"Out of range: {outside_count:,}/{len(samples):,} ({outside_percentage:.2f}%)\n"
-            + self._fit_text(fit)
-        )
-
-    def _get_interval_stats(self, samples, lower: float, upper: float):
-        inside_mask = (samples >= lower) & (samples <= upper)
-        inside_count = int(sum(inside_mask))
-        total = int(len(samples))
-        outside_count = total - inside_count
-        inside_percentage = (inside_count / total * 100.0) if total else 0.0
-        outside_percentage = (outside_count / total * 100.0) if total else 0.0
-        return inside_count, outside_count, inside_percentage, outside_percentage
-
-    def _on_histogram_click(self, event):
-        if event.inaxes is None or event.inaxes is not self._histogram_ax or event.button != 1:
-            return
-
-        for index, line in enumerate(self._interval_lines):
-            x_value = line.get_xdata()[0]
-            if x_value is None:
-                continue
-            if abs(event.xdata - x_value) <= 0.03 * max(abs(self._histogram_ax.get_xlim()[1] - self._histogram_ax.get_xlim()[0]), 1.0):
-                self._dragged_line = line
-                self._dragged_line_index = index
-                return
-
-    def _on_histogram_move(self, event):
-        if self._dragged_line is None or event.inaxes is not self._histogram_ax or event.xdata is None:
-            return
-
-        if self._dragged_line_index == 0:
-            self.interval_min_value = float(event.xdata)
-            if self.interval_min_value > self.interval_max_value:
-                self.interval_max_value = self.interval_min_value
-        else:
-            self.interval_max_value = float(event.xdata)
-            if self.interval_max_value < self.interval_min_value:
-                self.interval_min_value = self.interval_max_value
-
-        self._sync_interval_inputs_from_values()
-        self._update_interval_lines()
-        self._refresh_interval_summary(self._last_samples)
-        self.figure.canvas.draw_idle()
-
-    def _on_histogram_release(self, event):
-        self._dragged_line = None
-        self._dragged_line_index = None
-
-    def _sync_interval_inputs_from_values(self):
-        self.range_min_input.blockSignals(True)
-        self.range_max_input.blockSignals(True)
-        self.range_min_input.setValue(self.interval_min_value)
-        self.range_max_input.setValue(self.interval_max_value)
-        self.range_min_input.blockSignals(False)
-        self.range_max_input.blockSignals(False)
-
-    # ------------------------------------------------------------------
-    # Analysis
-    # ------------------------------------------------------------------
-
-    def run_analysis(self):
-        try:
-            stack = self._build_stack()
-            lower, upper = self._get_range_bounds()
-        except ValueError as e:
-            QMessageBox.warning(self, "Invalid data", str(e))
-            return
-
-        if not stack.dimensions:
-            QMessageBox.warning(self, "No data", "Add at least one dimension.")
-            return
-
-        method = self.method_combo.currentText()
-
-        if method == "worst_case":
-            result = stack.worst_case()
-            fit = stack.assess_fit(result, target=0.0)
-            self._show_stack_result(result, fit)
-            self.canvas.setVisible(False)
-
-        elif method == "rss":
-            result = stack.rss()
-            fit = stack.assess_fit(result, target=0.0)
-            self._show_stack_result(result, fit)
-            self.canvas.setVisible(False)
-
-        elif method == "monte_carlo":
-            try:
-                default_cpk = self._get_default_cpk()
-            except ValueError as e:
-                QMessageBox.warning(self, "Invalid global Cpk", str(e))
-                return
-
-            iterations = self._get_iterations()
-            result = stack.monte_carlo(iterations=iterations, default_cpk=default_cpk)
-            fit = stack.assess_fit(result, target=0.0)
-
-            model_lines = []
-            for d in stack.dimensions:
-                cpk = d.cpk if d.cpk is not None else default_cpk
-                model = f"Cpk={cpk}" if cpk is not None else "uniform"
-                model_lines.append(f"  {d.name}: {model}")
-
-            self._last_samples = result.samples
-            self._last_monte_carlo_payload = {"model_lines": model_lines, "result": result, "fit": fit}
-            self._plot_histogram(result.samples)
-            self._refresh_interval_summary(result.samples)
-            self.canvas.setVisible(True)
-
-    def _fit_text(self, fit) -> str:
-        lines = [
-            f"{'-' * 30}",
-            f"Verdict      : {fit.verdict.upper()}",
-            f"Margin (min) : {fit.margin_min:+.4f}",
-            f"Margin (max) : {fit.margin_max:+.4f}",
-        ]
-        if fit.interference_probability is not None:
-            lines.append(f"P(interference): {fit.interference_probability * 100:.2f}%")
-        return "\n".join(lines)
-
-    def _show_stack_result(self, result, fit):
-        self.result_label.setText(
-            f"{'-' * 30}\n"
-            f"Nominal : {result.nominal:.4f}\n"
-            f"Maximum : {result.upper_limit:.4f}\n"
-            f"Minimum : {result.lower_limit:.4f}\n"
-            f"+Tol    : {result.upper_limit - result.nominal:.4f}\n"
-            f"-Tol    : {result.nominal - result.lower_limit:.4f}\n"
-            + self._fit_text(fit)
-        )
-
-    def _plot_histogram(self, samples):
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.hist(samples, bins=50)
-        ax.set_title("Monte Carlo distribution")
-        ax.set_xlabel("Value")
-        ax.set_ylabel("Frequency")
-        self._histogram_ax = ax
-        self._interval_lines = [
-            ax.axvline(self.interval_min_value, color="#1f77b4", linestyle="--", linewidth=1.8),
-            ax.axvline(self.interval_max_value, color="#ff7f0e", linestyle="--", linewidth=1.8),
-        ]
-        self.figure.tight_layout()
-        self.canvas.draw()
-
 
 def main():
-    app = QApplication(sys.argv)
+    # compas_viewer's Renderer widget internally accesses a Viewer() singleton
+    # (via compas_viewer.base.Base.viewer), and Viewer.__init__ unconditionally
+    # creates its own QApplication(sys.argv) the first time it's instantiated.
+    # Since Viewer is a true singleton (__init__ only runs once, see
+    # compas_viewer.singleton.SingletonMeta), we let IT create the one and
+    # only QApplication here, then reuse that same instance for our own
+    # QMainWindow. If we instead created our own QApplication first, the
+    # first Renderer() we embed would try to spin up a second QApplication
+    # and crash with a shiboken "destroy the QApplication singleton" error.
+    try:
+        from compas_viewer.viewer import Viewer
+        Viewer()  # triggers QApplication creation; safe no-op on repeat calls
+        app = QApplication.instance()
+    except Exception:
+        app = QApplication.instance() or QApplication(sys.argv)
+
     window = TolstackWindow()
     window.show()
     sys.exit(app.exec())
