@@ -1,0 +1,384 @@
+diff --git a/Code/gui/app.py b/Code/gui/app.py
+index a2a9c62..a82caf9 100644
+--- a/Code/gui/app.py
++++ b/Code/gui/app.py
+@@ -81,11 +81,16 @@ from gui.step_viewer_mixin import StepViewerMixin
+ from gui.dimension_bank_mixin import DimensionBankMixin
+ from gui.analysis_mixin import AnalysisMixin
+ from gui.measurement_mixin import MeasurementMixin
++from gui.eclipse_mixin import EclipseMixin
++from gui.gdt_mixin import GdtMixin, PATTERN_COLUMNS
+ 
+ COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+/-)", "Cpk (optional)"]
+ 
+ 
+-class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin, MeasurementMixin):
++class TolstackWindow(
++    QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin,
++    MeasurementMixin, EclipseMixin, GdtMixin,
++):
+     def __init__(self):
+         super().__init__()
+         self.setWindowTitle("Tol-Forge: Tolerance Stack Analysis")
+@@ -107,6 +112,7 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         self._step_load_worker = None
+         self._step_load_generation = 0
+         self._measure_init_state()
++        self._gdt_init_state()
+ 
+         central = QWidget()
+         self.setCentralWidget(central)
+@@ -246,12 +252,15 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         for key, caption in [
+             ("min", "Min distance:"), ("max", "Max distance:"),
+             ("normal", "Normal distance:"), ("xyz", "Offset (X/Y/Z):"),
+-            ("angle", "Angle:"),
++            ("angle", "Angle:"), ("radius_a", "Diameter A (if circular):"),
++            ("radius_b", "Diameter B (if circular):"),
++            ("circle_center", "Circle center offset:"),
+         ]:
+             row = QHBoxLayout()
+             caption_label = QLabel(caption)
+             caption_label.setStyleSheet("font-weight: bold;")
+             value_label = QLabel("-")
++            value_label.setWordWrap(True)
+             self.measure_result_labels[key] = value_label
+             row.addWidget(caption_label)
+             row.addWidget(value_label, stretch=1)
+@@ -286,9 +295,258 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         add_to_bank_btn.clicked.connect(self.add_measurement_to_bank)
+         measure_layout.addWidget(add_to_bank_btn)
+ 
++        diameter_bank_row = QHBoxLayout()
++        add_diameter_a_btn = QPushButton("Bank diameter A")
++        add_diameter_a_btn.clicked.connect(self.add_circle_diameter_a_to_bank)
++        add_diameter_b_btn = QPushButton("Bank diameter B")
++        add_diameter_b_btn.clicked.connect(self.add_circle_diameter_b_to_bank)
++        diameter_bank_row.addWidget(add_diameter_a_btn)
++        diameter_bank_row.addWidget(add_diameter_b_btn)
++        measure_layout.addLayout(diameter_bank_row)
++
+         measure_layout.addStretch(1)
+         sidebar.addTab(measure_tab, "Measure")
+ 
++        # --- Tab 5: Eclipse (LED-hole vs sticker-hole occlusion) ---
++        eclipse_tab = QWidget()
++        eclipse_layout = QVBoxLayout(eclipse_tab)
++
++        eclipse_intro = QLabel(
++            "How much of an LED-hole's light gets blocked by a covering "
++            "sticker hole, given tolerances on both hole diameters and "
++            "their relative position."
++        )
++        eclipse_intro.setWordWrap(True)
++        eclipse_intro.setStyleSheet("color: #555555; font-size: 11px;")
++        eclipse_layout.addWidget(eclipse_intro)
++
++        def add_tolerance_row(layout, prefix: str, caption: str, use_measured_btn=None):
++            group = QFrame()
++            group.setFrameShape(QFrame.StyledPanel)
++            group_layout = QVBoxLayout(group)
++            header_row = QHBoxLayout()
++            header_label = QLabel(caption)
++            header_label.setStyleSheet("font-weight: bold;")
++            header_row.addWidget(header_label, stretch=1)
++            if use_measured_btn is not None:
++                btn = QPushButton(use_measured_btn[0])
++                btn.clicked.connect(use_measured_btn[1])
++                header_row.addWidget(btn)
++            group_layout.addLayout(header_row)
++
++            fields_row = QHBoxLayout()
++            for field_name, field_label, default in [
++                ("nominal", "Nominal:", "0.0"), ("tol_plus", "Tol +:", "0.0"),
++                ("tol_minus", "Tol -:", "0.0"), ("cpk", "Cpk:", ""),
++            ]:
++                fields_row.addWidget(QLabel(field_label))
++                field_input = QLineEdit(default)
++                field_input.setMaximumWidth(60)
++                if field_name == "cpk":
++                    field_input.setPlaceholderText("uniform")
++                setattr(self, f"eclipse_{prefix}_{field_name}_input", field_input)
++                fields_row.addWidget(field_input)
++            group_layout.addLayout(fields_row)
++            layout.addWidget(group)
++
++        add_tolerance_row(
++            eclipse_layout, "handle", "Handle hole diameter",
++            use_measured_btn=("Use measured A", self.use_measured_a_for_handle),
++        )
++        add_tolerance_row(
++            eclipse_layout, "sticker", "Sticker hole diameter",
++            use_measured_btn=("Use measured B", self.use_measured_b_for_sticker),
++        )
++        add_tolerance_row(eclipse_layout, "offset_x", "Position offset X")
++        add_tolerance_row(eclipse_layout, "offset_y", "Position offset Y")
++
++        use_offset_btn = QPushButton("Use measured circle-center offset (-> offset X)")
++        use_offset_btn.clicked.connect(self.use_measured_offset)
++        eclipse_layout.addWidget(use_offset_btn)
++
++        eclipse_layout.addSpacing(10)
++        run_row = QHBoxLayout()
++        run_row.addWidget(QLabel("Iterations:"))
++        self.eclipse_iterations_input = QSpinBox()
++        self.eclipse_iterations_input.setRange(100, 1000000)
++        self.eclipse_iterations_input.setSingleStep(1000)
++        self.eclipse_iterations_input.setValue(10000)
++        run_row.addWidget(self.eclipse_iterations_input)
++        run_row.addWidget(QLabel("Alarm above %:"))
++        self.eclipse_threshold_input = QLineEdit("20.0")
++        self.eclipse_threshold_input.setMaximumWidth(60)
++        run_row.addWidget(self.eclipse_threshold_input)
++        eclipse_layout.addLayout(run_row)
++
++        run_eclipse_btn = QPushButton("Run eclipse analysis")
++        run_eclipse_btn.setStyleSheet("font-weight: bold;")
++        run_eclipse_btn.clicked.connect(self.run_eclipse_analysis)
++        eclipse_layout.addWidget(run_eclipse_btn)
++
++        eclipse_results_box = QFrame()
++        eclipse_results_box.setFrameShape(QFrame.StyledPanel)
++        eclipse_results_layout = QVBoxLayout(eclipse_results_box)
++        self.eclipse_result_labels = {}
++        for key, caption in [
++            ("mean", "Mean eclipse:"), ("std", "Std dev:"),
++            ("mc_range", "Monte Carlo range:"), ("worst_case", "Exact worst case:"),
++            ("probability", "Risk:"),
++        ]:
++            row = QHBoxLayout()
++            caption_label = QLabel(caption)
++            caption_label.setStyleSheet("font-weight: bold;")
++            value_label = QLabel("-")
++            value_label.setWordWrap(True)
++            self.eclipse_result_labels[key] = value_label
++            row.addWidget(caption_label)
++            row.addWidget(value_label, stretch=1)
++            eclipse_results_layout.addLayout(row)
++        eclipse_layout.addWidget(eclipse_results_box)
++
++        self.eclipse_figure = Figure(figsize=(4, 3))
++        self.eclipse_canvas = FigureCanvasQTAgg(self.eclipse_figure)
++        self.eclipse_canvas.setVisible(False)
++        eclipse_layout.addWidget(self.eclipse_canvas, stretch=1)
++
++        eclipse_layout.addStretch(1)
++        sidebar.addTab(eclipse_tab, "Eclipse")
++
++        # --- Tab 6: GD&T Position ---
++        gdt_tab = QWidget()
++        gdt_layout = QVBoxLayout(gdt_tab)
++
++        gdt_intro = QLabel(
++            "Position tolerance (\u2316) for a pattern of features against a "
++            "3-datum reference frame. Datums: pick a face or a circular "
++            "edge/hole for each of Primary/Secondary/Tertiary."
++        )
++        gdt_intro.setWordWrap(True)
++        gdt_intro.setStyleSheet("color: #555555; font-size: 11px;")
++        gdt_layout.addWidget(gdt_intro)
++
++        datum_box = QFrame()
++        datum_box.setFrameShape(QFrame.StyledPanel)
++        datum_box_layout = QVBoxLayout(datum_box)
++        self.datum_slot_labels = {}
++        for slot_name, arm_fn, clear_fn in [
++            ("Primary", self.datum_arm_primary, self.datum_clear_primary),
++            ("Secondary", self.datum_arm_secondary, self.datum_clear_secondary),
++            ("Tertiary", self.datum_arm_tertiary, self.datum_clear_tertiary),
++        ]:
++            row = QHBoxLayout()
++            label = QLabel(f"{slot_name}: (none)")
++            self.datum_slot_labels[slot_name] = label
++            pick_btn = QPushButton(f"Pick {slot_name}")
++            pick_btn.clicked.connect(arm_fn)
++            clear_btn = QPushButton("Clear")
++            clear_btn.clicked.connect(clear_fn)
++            row.addWidget(label, stretch=1)
++            row.addWidget(pick_btn)
++            row.addWidget(clear_btn)
++            datum_box_layout.addLayout(row)
++
++        build_drf_btn = QPushButton("Build datum reference frame")
++        build_drf_btn.setStyleSheet("font-weight: bold;")
++        build_drf_btn.clicked.connect(self.build_datum_frame)
++        datum_box_layout.addWidget(build_drf_btn)
++        self.drf_status_label = QLabel("Datum reference frame not built yet.")
++        self.drf_status_label.setWordWrap(True)
++        self.drf_status_label.setStyleSheet("font-size: 11px; color: #555555;")
++        datum_box_layout.addWidget(self.drf_status_label)
++        gdt_layout.addWidget(datum_box)
++
++        gdt_layout.addSpacing(8)
++        pattern_btn_row = QHBoxLayout()
++        pick_feature_btn = QPushButton("Pick feature for pattern")
++        pick_feature_btn.clicked.connect(self.pattern_arm_pick)
++        remove_feature_btn = QPushButton("Remove selected")
++        remove_feature_btn.clicked.connect(self.pattern_remove_selected)
++        pattern_btn_row.addWidget(pick_feature_btn)
++        pattern_btn_row.addWidget(remove_feature_btn)
++        gdt_layout.addLayout(pattern_btn_row)
++
++        self.pattern_table = QTableWidget(0, len(PATTERN_COLUMNS))
++        self.pattern_table.setHorizontalHeaderLabels(PATTERN_COLUMNS)
++        self.pattern_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
++        self.pattern_table.setMinimumHeight(150)
++        gdt_layout.addWidget(self.pattern_table)
++
++        callout_box = QFrame()
++        callout_box.setFrameShape(QFrame.StyledPanel)
++        callout_layout = QHBoxLayout(callout_box)
++        callout_layout.addWidget(QLabel("\u2300T:"))
++        self.gdt_base_tolerance_input = QLineEdit("0.1")
++        self.gdt_base_tolerance_input.setMaximumWidth(60)
++        callout_layout.addWidget(self.gdt_base_tolerance_input)
++        callout_layout.addWidget(QLabel("Modifier:"))
++        self.gdt_modifier_combo = QComboBox()
++        self.gdt_modifier_combo.addItems(["RFS", "MMC", "LMC"])
++        callout_layout.addWidget(self.gdt_modifier_combo)
++        callout_layout.addWidget(QLabel("MMC size:"))
++        self.gdt_mmc_size_input = QLineEdit("0.0")
++        self.gdt_mmc_size_input.setMaximumWidth(60)
++        callout_layout.addWidget(self.gdt_mmc_size_input)
++        callout_layout.addWidget(QLabel("LMC size:"))
++        self.gdt_lmc_size_input = QLineEdit("0.0")
++        self.gdt_lmc_size_input.setMaximumWidth(60)
++        callout_layout.addWidget(self.gdt_lmc_size_input)
++        callout_layout.addWidget(QLabel("Kind:"))
++        self.gdt_feature_kind_combo = QComboBox()
++        self.gdt_feature_kind_combo.addItems(["hole", "pin"])
++        callout_layout.addWidget(self.gdt_feature_kind_combo)
++        gdt_layout.addWidget(callout_box)
++
++        eval_row = QHBoxLayout()
++        eval_row.addWidget(QLabel("Iterations:"))
++        self.gdt_iterations_input = QSpinBox()
++        self.gdt_iterations_input.setRange(100, 1000000)
++        self.gdt_iterations_input.setSingleStep(1000)
++        self.gdt_iterations_input.setValue(10000)
++        eval_row.addWidget(self.gdt_iterations_input)
++        eval_row.addWidget(QLabel("Default Cpk:"))
++        self.gdt_default_cpk_input = QLineEdit()
++        self.gdt_default_cpk_input.setPlaceholderText("uniform")
++        self.gdt_default_cpk_input.setMaximumWidth(60)
++        eval_row.addWidget(self.gdt_default_cpk_input)
++        gdt_layout.addLayout(eval_row)
++
++        eval_btn_row = QHBoxLayout()
++        eval_nominal_btn = QPushButton("Evaluate (as-modeled)")
++        eval_nominal_btn.clicked.connect(self.evaluate_pattern_deterministic)
++        eval_mc_btn = QPushButton("Run Monte Carlo")
++        eval_mc_btn.setStyleSheet("font-weight: bold;")
++        eval_mc_btn.clicked.connect(self.run_pattern_monte_carlo_analysis)
++        eval_btn_row.addWidget(eval_nominal_btn)
++        eval_btn_row.addWidget(eval_mc_btn)
++        gdt_layout.addLayout(eval_btn_row)
++
++        gdt_results_box = QFrame()
++        gdt_results_box.setFrameShape(QFrame.StyledPanel)
++        gdt_results_layout = QVBoxLayout(gdt_results_box)
++        self.gdt_result_labels = {}
++        for key, caption in [
++            ("nominal", "As-modeled:"), ("pattern_fail_rate", "Pattern fail rate:"),
++            ("per_feature", "Per-feature fail rate:"),
++        ]:
++            row = QHBoxLayout()
++            caption_label = QLabel(caption)
++            caption_label.setStyleSheet("font-weight: bold;")
++            value_label = QLabel("-")
++            value_label.setWordWrap(True)
++            self.gdt_result_labels[key] = value_label
++            row.addWidget(caption_label)
++            row.addWidget(value_label, stretch=1)
++            gdt_results_layout.addLayout(row)
++        gdt_layout.addWidget(gdt_results_box)
++
++        self.gdt_figure = Figure(figsize=(4, 3))
++        self.gdt_canvas = FigureCanvasQTAgg(self.gdt_figure)
++        self.gdt_canvas.setVisible(False)
++        gdt_layout.addWidget(self.gdt_canvas, stretch=1)
++
++        gdt_layout.addStretch(1)
++        sidebar.addTab(gdt_tab, "GD&T Position")
++
+         root_layout.addWidget(sidebar, stretch=0)
+ 
+         # ==================================================================
+diff --git a/Code/gui/step_viewer_mixin.py b/Code/gui/step_viewer_mixin.py
+index 6082a7a..03abdcd 100644
+--- a/Code/gui/step_viewer_mixin.py
++++ b/Code/gui/step_viewer_mixin.py
+@@ -197,10 +197,26 @@ class StepViewerMixin:
+         thread = QThread(self)
+         worker = StepLoadWorker(path, deflection)
+         worker.moveToThread(thread)
++        # Stash on the worker itself rather than capturing in a lambda -
++        # see the note on connect() below for why.
++        worker.generation = generation
+ 
+         thread.started.connect(worker.run)
+-        worker.finished.connect(lambda result: self._on_step_load_finished(path, generation, worker, result))
+-        worker.failed.connect(lambda message: self._on_step_load_failed(generation, message))
++        # IMPORTANT: connect directly to bound methods of `self` (a
++        # QObject living on the main thread), not to lambdas/partials.
++        # Qt's AutoConnection only queues a cross-thread call onto the
++        # receiver's thread when it can detect the receiver's thread
++        # affinity - which it can for a QObject's bound method, but NOT
++        # for a plain Python lambda/partial (no thread affiliation to
++        # detect). With a lambda, AutoConnection silently falls back to
++        # DirectConnection, so the slot - including our GL calls in
++        # _on_step_load_finished - would run on the emitting (worker)
++        # thread instead of the main thread, which is exactly what
++        # produced "Cannot make QOpenGLContext current in a different
++        # thread". Passing QueuedConnection explicitly here removes any
++        # dependency on that auto-detection working correctly.
++        worker.finished.connect(self._on_step_load_finished, Qt.ConnectionType.QueuedConnection)
++        worker.failed.connect(self._on_step_load_failed, Qt.ConnectionType.QueuedConnection)
+         worker.finished.connect(thread.quit)
+         worker.failed.connect(thread.quit)
+         thread.finished.connect(self._cleanup_step_load_thread)
+@@ -209,17 +225,20 @@ class StepViewerMixin:
+         self._step_load_worker = worker
+         thread.start()
+ 
+-    def _on_step_load_failed(self, generation: int, message: str):
+-        if generation != self._step_load_generation:
++    def _on_step_load_failed(self, message: str):
++        worker = self._step_load_worker
++        if worker is None or worker.generation != self._step_load_generation:
+             return  # superseded by a newer load or a clear_step_preview()
+         self.step_status_label.setText(f"Failed to read/tessellate the STEP file: {message}")
+ 
+-    def _on_step_load_finished(self, path: str, generation: int, worker: StepLoadWorker, result):
+-        """Runs on the main thread (Qt queued-connection default for
+-        cross-thread signals) - safe to touch the GL context here.
++    def _on_step_load_finished(self, result):
++        """Runs on the main thread, now that the connect() above forces
++        QueuedConnection - safe to touch the GL context here.
+         """
+-        if generation != self._step_load_generation:
++        worker = self._step_load_worker
++        if worker is None or worker.generation != self._step_load_generation:
+             return  # superseded by a newer load or a clear_step_preview() in the meantime
++        path = worker.path
+ 
+         try:
+             scene = self._step_preview_renderer.scene
+@@ -326,11 +345,15 @@ class StepViewerMixin:
+         """Show info about whichever face/edge/vertex was just clicked.
+ 
+         If a measurement slot (A or B) is currently armed via the Measure
+-        tab, this pick is consumed by MeasurementMixin instead of just
+-        updating the status label - see _measure_on_pick.
++        tab, or a datum slot (Primary/Secondary/Tertiary) is armed via
++        the GD&T Position tab, this pick is consumed by that tool
++        instead of just updating the status label - see _measure_on_pick
++        and _datum_on_pick.
+         """
+         if getattr(self, "_measure_on_pick", None) is not None and self._measure_on_pick(obj):
+             return
++        if getattr(self, "_datum_on_pick", None) is not None and self._datum_on_pick(obj):
++            return
+ 
+         info = self._step_entity_info.get(id(obj)) if obj is not None else None
+         if info is None:

@@ -1,0 +1,75 @@
+diff --git a/Code/gui/step_load_worker.py b/Code/gui/step_load_worker.py
+index ad8a3aa..81b789a 100644
+--- a/Code/gui/step_load_worker.py
++++ b/Code/gui/step_load_worker.py
+@@ -44,6 +44,10 @@ class StepLoadWorker(QObject):
+         super().__init__()
+         self.path = path
+         self.deflection = deflection
++        # Set by the caller (right after construction, before thread.start())
++        # so the finished/failed slots can tell a stale/superseded load
++        # apart from the current one without needing a lambda to capture it.
++        self.generation = None
+         # Set True if the installed compas_occ's to_viewmesh() doesn't
+         # accept deflection kwargs at all, so the caller can tell the user
+         # their quality setting had no effect rather than silently
+diff --git a/Code/gui/step_viewer_mixin.py b/Code/gui/step_viewer_mixin.py
+index 6082a7a..852199b 100644
+--- a/Code/gui/step_viewer_mixin.py
++++ b/Code/gui/step_viewer_mixin.py
+@@ -197,10 +197,26 @@ class StepViewerMixin:
+         thread = QThread(self)
+         worker = StepLoadWorker(path, deflection)
+         worker.moveToThread(thread)
++        # Stash on the worker itself rather than capturing in a lambda -
++        # see the note on connect() below for why.
++        worker.generation = generation
+ 
+         thread.started.connect(worker.run)
+-        worker.finished.connect(lambda result: self._on_step_load_finished(path, generation, worker, result))
+-        worker.failed.connect(lambda message: self._on_step_load_failed(generation, message))
++        # IMPORTANT: connect directly to bound methods of `self` (a
++        # QObject living on the main thread), not to lambdas/partials.
++        # Qt's AutoConnection only queues a cross-thread call onto the
++        # receiver's thread when it can detect the receiver's thread
++        # affinity - which it can for a QObject's bound method, but NOT
++        # for a plain Python lambda/partial (no thread affiliation to
++        # detect). With a lambda, AutoConnection silently falls back to
++        # DirectConnection, so the slot - including our GL calls in
++        # _on_step_load_finished - would run on the emitting (worker)
++        # thread instead of the main thread, which is exactly what
++        # produced "Cannot make QOpenGLContext current in a different
++        # thread". Passing QueuedConnection explicitly here removes any
++        # dependency on that auto-detection working correctly.
++        worker.finished.connect(self._on_step_load_finished, Qt.ConnectionType.QueuedConnection)
++        worker.failed.connect(self._on_step_load_failed, Qt.ConnectionType.QueuedConnection)
+         worker.finished.connect(thread.quit)
+         worker.failed.connect(thread.quit)
+         thread.finished.connect(self._cleanup_step_load_thread)
+@@ -209,17 +225,20 @@ class StepViewerMixin:
+         self._step_load_worker = worker
+         thread.start()
+ 
+-    def _on_step_load_failed(self, generation: int, message: str):
+-        if generation != self._step_load_generation:
++    def _on_step_load_failed(self, message: str):
++        worker = self._step_load_worker
++        if worker is None or worker.generation != self._step_load_generation:
+             return  # superseded by a newer load or a clear_step_preview()
+         self.step_status_label.setText(f"Failed to read/tessellate the STEP file: {message}")
+ 
+-    def _on_step_load_finished(self, path: str, generation: int, worker: StepLoadWorker, result):
+-        """Runs on the main thread (Qt queued-connection default for
+-        cross-thread signals) - safe to touch the GL context here.
++    def _on_step_load_finished(self, result):
++        """Runs on the main thread, now that the connect() above forces
++        QueuedConnection - safe to touch the GL context here.
+         """
+-        if generation != self._step_load_generation:
++        worker = self._step_load_worker
++        if worker is None or worker.generation != self._step_load_generation:
+             return  # superseded by a newer load or a clear_step_preview() in the meantime
++        path = worker.path
+ 
+         try:
+             scene = self._step_preview_renderer.scene

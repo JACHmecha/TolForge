@@ -77,6 +77,9 @@ try:
             if self._drag_button == _Qt.MouseButton.LeftButton and self._dragged_distance < 4:
                 pos = event.position() if hasattr(event, "position") else event.pos()
                 self._handle_click_select(int(pos.x()), int(pos.y()))
+            elif self._drag_button == _Qt.MouseButton.RightButton and self._dragged_distance < 4:
+                pos = event.position() if hasattr(event, "position") else event.pos()
+                self._handle_right_click(int(pos.x()), int(pos.y()))
             self._drag_button = None
             self._last_pos = None
             self._dragged_distance = 0.0
@@ -119,6 +122,32 @@ try:
                 # here (e.g. an API detail that differs from what's
                 # documented) shouldn't crash the whole preview.
                 pass
+
+        def _handle_right_click(self, x, y):
+            import numpy as np
+
+            try:
+                colors = self.read_instance_color((x, y, x, y))
+                colors = np.array(colors).reshape(-1, np.array(colors).shape[-1])
+                unique_colors = np.unique(colors, axis=0)
+
+                selected = None
+                for c in unique_colors:
+                    key = tuple(int(v) for v in c)
+                    candidate = self.scene.instance_colors.get(key)
+                    if candidate is not None:
+                        selected = candidate
+                        break
+
+                info = None
+                if getattr(self, "resolve_entity_info", None) is not None:
+                    info = self.resolve_entity_info(selected)
+
+                if getattr(self, "on_measure_context_menu", None) is not None:
+                    self.on_measure_context_menu(info, (x, y))
+            except Exception:
+                pass
+
 
         def wheelEvent(self, event):
             degrees = event.angleDelta().y() / 8
