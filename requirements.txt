@@ -3,3 +3,7 @@ PySide6>=6.6
 matplotlib>=3.8
 compas>=2.15.1
 compas_viewer>=2.0.2
+pytest>=8.0
+
+# Optional for STEP preview support (recommended via conda-forge):
+# compas_occ pythonocc-core

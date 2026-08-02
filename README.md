@@ -17,6 +17,9 @@ vertex selection.
 - **STEP file 3D viewer**: load a `.step`/`.stp` file and view it in an
   embedded, interactive 3D viewport - rotate, pan, zoom, and click to
   select individual faces, edges, or vertices.
+- **Measurement context menu**: right-click a face, edge, or vertex in the
+  3D viewport to assign it as Measure A or Measure B, then add the current
+  measurement directly to the dimension bank.
 
 ## Project structure
 
@@ -125,10 +128,16 @@ interpreter, not whatever `python` resolves to by default.
 | Pan | Right-click + drag, or Shift + left-click + drag |
 | Zoom | Scroll wheel |
 | Select a face / edge / vertex | Left-click (without dragging) |
+| Open measurement context menu | Right-click (without dragging) |
 
 Selecting an entity shows its type and index in the status label above
 the viewport. Loading a new STEP file replaces the current geometry; use
 **Clear** to empty the viewport without loading a new file.
+
+For measurements, right-click an entity to open the context menu and set
+it as Measure A or Measure B. Once two entities are selected, the Measure
+panel shows the same distance/angle/circle-fit results as before, and the
+same menu can add the current measurement to the dimension bank.
 
 ### Using `tolstack` without the GUI
 
