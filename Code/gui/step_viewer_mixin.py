@@ -11,18 +11,48 @@ and analysis code.
 
 from pathlib import Path
 
+import numpy as np
+
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 
 from compas.colors import Color
 
 from .step_renderer import Renderer, detect_step_backend
+from .step_load_worker import StepLoadWorker
+
+# Qualitative palette for coloring faces by which solid they belong to -
+# cycles if there are more solids than colors. Chosen for mutual
+# distinguishability (not a sequential/gradient palette) rather than for
+# any particular aesthetic theme.
+SOLID_COLOR_PALETTE = [
+    "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2",
+    "#eeca3b", "#b279a2", "#ff9da6", "#9d755d", "#bab0ac",
+]
+
+_PICK_REJECTED = object()  # sentinel: this pick didn't match the active filter
+
+
+class _SolidPickMarker:
+    """Lightweight placeholder so a synthesized 'whole solid' selection
+    (aggregating every face that shares one solid_index) can flow through
+    the same id(obj)-keyed _step_entity_info lookup every pick-consumer
+    (_measure_on_pick, _datum_on_pick, _on_step_entity_picked itself)
+    already uses for individual face/edge/vertex picks - no separate code
+    path needed in any of them for 'solid' selections.
+    """
+
+    __slots__ = ()
 
 
 class StepViewerMixin:
     """Expects the host class (TolstackWindow) to provide, from its own
     __init__: self.step_status_label, self.step_preview_layout,
-    self._step_preview_renderer, self._step_entity_info.
+    self._step_preview_renderer, self._step_entity_info,
+    self._step_load_thread (None), self._step_load_worker (None),
+    self._step_load_generation (0), plus self.step_deflection_input (a
+    QDoubleSpinBox for the tessellation quality/LOD setting) built in
+    app.py.
     """
 
     def load_step_file(self):
@@ -43,11 +73,12 @@ class StepViewerMixin:
             )
             return
 
-        self._render_step_geometry(path)
+        self._start_step_load(path)
 
     def clear_step_preview(self):
         """Clear the loaded geometry but keep the 3D viewport itself visible
         and ready - it's initialized once at startup, not recreated here."""
+        self._step_load_generation += 1  # invalidate any in-flight background load
         self.step_status_label.setText("No STEP file loaded yet.")
         if self._step_preview_renderer is not None:
             scene = self._step_preview_renderer.scene
@@ -84,6 +115,8 @@ class StepViewerMixin:
             self._step_preview_renderer.setMinimumHeight(220)
             self._step_preview_renderer.setMinimumWidth(220)
             self._step_preview_renderer.on_pick = self._on_step_entity_picked
+            self._step_preview_renderer.on_measure_context_menu = self._show_measure_context_menu
+            self._step_preview_renderer.resolve_entity_info = self._resolve_entity_info_for_renderer
             self.step_preview_layout.addWidget(self._step_preview_renderer)
             self._step_preview_renderer.show()
             QApplication.processEvents()
@@ -158,22 +191,14 @@ class StepViewerMixin:
 
         renderer.update()
 
-    def _render_step_geometry(self, path: str):
-        """Load a STEP file via compas_occ and render it with individually
-        selectable faces, edges, and vertices.
+    def _start_step_load(self, path: str):
+        """Kick off STEP parsing/tessellation on a background QThread.
 
-        Rather than adding one merged Mesh (which has no per-face boundaries
-        once tessellated), each topological face/edge/vertex is added as its
-        own scene object. compas_viewer's object-level click-selection can
-        then distinguish which specific face/edge/vertex was clicked, since
-        selection works by picking a whole SceneObject, not a sub-region of
-        one big mesh.
-
-        Reuses the Renderer widget created once at app startup
-        (_init_step_preview_renderer) rather than destroying and recreating
-        it here - both to avoid the GL-surface-creation race that used to
-        break the very first load, and because a per-file failure (bad
-        STEP data) shouldn't tear down an otherwise-working 3D viewport.
+        Only the OCCT/compas_occ work happens there (see
+        StepLoadWorker) - it does no Qt/GL calls. Everything GL-related
+        (scene.add, rebuild_buffers) still has to happen back on this,
+        the main thread, once the worker hands its result back via a
+        signal - that's _on_step_load_finished below.
         """
         if self._step_preview_renderer is None:
             self._show_step_preview_placeholder(
@@ -181,37 +206,64 @@ class StepViewerMixin:
             )
             return
 
-        try:
-            from compas_occ.brep import OCCBrep
-        except ImportError as exc:
-            self.step_status_label.setText(f"compas_occ could not be imported: {exc}")
+        if self._step_load_thread is not None:
+            self.step_status_label.setText(
+                "A STEP file is already loading - please wait for it to finish."
+            )
             return
 
-        try:
-            # heal=True fixes small gaps/discontinuities that are common in
-            # STEP files exported from different CAD packages.
-            brep = OCCBrep.from_step(path, heal=True)
+        self._step_load_generation += 1
+        generation = self._step_load_generation
+        deflection = self.step_deflection_input.value()
 
-            # Each face gets tessellated on its own (via a single-face
-            # sub-Brep) so it becomes its own pickable object, rather than
-            # part of one fused mesh with no face boundaries.
-            face_meshes = []
-            for face in brep.faces:
-                face_brep = OCCBrep.from_brepfaces([face], solid=False)
-                face_mesh, _unused_edges = face_brep.to_viewmesh()
-                face_meshes.append(face_mesh)
+        self.step_status_label.setText(f"Loading {Path(path).name} ...")
+        QApplication.processEvents()
 
-            # The whole-Brep to_viewmesh() call also returns per-edge
-            # polylines - reuse that instead of re-deriving edge geometry
-            # by hand.
-            _unused_mesh, edge_polylines = brep.to_viewmesh()
+        thread = QThread(self)
+        worker = StepLoadWorker(path, deflection)
+        worker.moveToThread(thread)
+        # Stash on the worker itself rather than capturing in a lambda -
+        # see the note on connect() below for why.
+        worker.generation = generation
 
-            vertex_points = [vertex.to_point() for vertex in brep.vertices]
-        except Exception as exc:
-            # Don't tear down the 3D viewport over one bad file - just
-            # report it and leave whatever was already shown in place.
-            self.step_status_label.setText(f"Failed to read/tessellate the STEP file: {exc}")
-            return
+        thread.started.connect(worker.run)
+        # IMPORTANT: connect directly to bound methods of `self` (a
+        # QObject living on the main thread), not to lambdas/partials.
+        # Qt's AutoConnection only queues a cross-thread call onto the
+        # receiver's thread when it can detect the receiver's thread
+        # affinity - which it can for a QObject's bound method, but NOT
+        # for a plain Python lambda/partial (no thread affiliation to
+        # detect). With a lambda, AutoConnection silently falls back to
+        # DirectConnection, so the slot - including our GL calls in
+        # _on_step_load_finished - would run on the emitting (worker)
+        # thread instead of the main thread, which is exactly what
+        # produced "Cannot make QOpenGLContext current in a different
+        # thread". Passing QueuedConnection explicitly here removes any
+        # dependency on that auto-detection working correctly.
+        worker.finished.connect(self._on_step_load_finished, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._on_step_load_failed, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._cleanup_step_load_thread)
+
+        self._step_load_thread = thread
+        self._step_load_worker = worker
+        thread.start()
+
+    def _on_step_load_failed(self, message: str):
+        worker = self._step_load_worker
+        if worker is None or worker.generation != self._step_load_generation:
+            return  # superseded by a newer load or a clear_step_preview()
+        self.step_status_label.setText(f"Failed to read/tessellate the STEP file: {message}")
+
+    def _on_step_load_finished(self, result):
+        """Runs on the main thread, now that the connect() above forces
+        QueuedConnection - safe to touch the GL context here.
+        """
+        worker = self._step_load_worker
+        if worker is None or worker.generation != self._step_load_generation:
+            return  # superseded by a newer load or a clear_step_preview() in the meantime
+        path = worker.path
 
         try:
             scene = self._step_preview_renderer.scene
@@ -227,11 +279,24 @@ class StepViewerMixin:
 
             self._step_entity_info = {}
 
-            face_color = Color.from_hex("#4c78a8")
+            # Faces are colored per-solid (cycling through this palette) so
+            # separate bodies in an assembly are easy to tell apart at a
+            # glance. Edges/vertices stay a fixed neutral color regardless
+            # of which solid they belong to - they aren't grouped by solid
+            # the way faces are (see step_load_worker.py's
+            # _group_faces_by_solid docstring for why), and keeping them
+            # neutral also reads better visually as wireframe/point accents
+            # against the colored, shaded faces.
             edge_color = Color.from_hex("#1f2d3d")
             vertex_color = Color.from_hex("#e45756")
 
-            for i, face_mesh in enumerate(face_meshes):
+            solid_palette = [
+                Color.from_hex(hex_code) for hex_code in SOLID_COLOR_PALETTE
+            ]
+
+            for i, face_mesh in enumerate(result.face_meshes):
+                solid_index = result.face_solid_indices[i] if i < len(result.face_solid_indices) else 0
+                face_color = solid_palette[solid_index % len(solid_palette)]
                 try:
                     obj = scene.add(
                         face_mesh, show_faces=True, show_lines=False, facecolor=face_color
@@ -239,23 +304,32 @@ class StepViewerMixin:
                 except TypeError:
                     obj = scene.add(face_mesh)
                 if obj is not None:
-                    self._step_entity_info[id(obj)] = {"type": "face", "index": i}
+                    points = np.array(
+                        [face_mesh.vertex_attributes(vkey, "xyz") for vkey in face_mesh.vertices()],
+                        dtype=float,
+                    )
+                    self._step_entity_info[id(obj)] = {
+                        "type": "face", "index": i, "points": points, "mesh": face_mesh,
+                        "solid_index": solid_index,
+                    }
 
-            for i, polyline in enumerate(edge_polylines):
+            for i, polyline in enumerate(result.edge_polylines):
                 try:
                     obj = scene.add(polyline, linecolor=edge_color, linewidth=2)
                 except TypeError:
                     obj = scene.add(polyline)
                 if obj is not None:
-                    self._step_entity_info[id(obj)] = {"type": "edge", "index": i}
+                    points = np.array([[p.x, p.y, p.z] for p in polyline.points], dtype=float)
+                    self._step_entity_info[id(obj)] = {"type": "edge", "index": i, "points": points}
 
-            for i, point in enumerate(vertex_points):
+            for i, point in enumerate(result.vertex_points):
                 try:
                     obj = scene.add(point, pointcolor=vertex_color, pointsize=8)
                 except TypeError:
                     obj = scene.add(point)
                 if obj is not None:
-                    self._step_entity_info[id(obj)] = {"type": "vertex", "index": i}
+                    points = np.array([[point.x, point.y, point.z]], dtype=float)
+                    self._step_entity_info[id(obj)] = {"type": "vertex", "index": i, "points": points}
 
             # CRITICAL: initializeGL() already ran once, at app startup, when
             # _init_step_preview_renderer() first showed this widget with an
@@ -280,17 +354,124 @@ class StepViewerMixin:
             self._step_preview_renderer.update()
             QApplication.processEvents()
 
+            lod_note = "" if worker.deflection_applied else " (quality setting not supported by this compas_occ version - used its default)"
+            solid_count = len(set(result.face_solid_indices)) if result.face_solid_indices else 0
             self.step_status_label.setText(
                 f"Loaded: {Path(path).name}\n"
-                f"Faces: {len(face_meshes)}  Edges: {len(edge_polylines)}  "
-                f"Vertices: {len(vertex_points)}\n"
-                "Left-click a face/edge/vertex to select it."
+                f"Solids: {solid_count}  Faces: {len(result.face_meshes)}  "
+                f"Edges: {len(result.edge_polylines)}  Vertices: {len(result.vertex_points)}\n"
+                f"Left-click a face/edge/vertex to select it.{lod_note}"
             )
         except Exception as exc:  # pragma: no cover - runtime environment specific
             self.step_status_label.setText(f"Could not display the STEP geometry: {exc}")
 
+    def _cleanup_step_load_thread(self):
+        if self._step_load_thread is not None:
+            self._step_load_thread.deleteLater()
+        if self._step_load_worker is not None:
+            self._step_load_worker.deleteLater()
+        self._step_load_thread = None
+        self._step_load_worker = None
+
+    def _cancel_step_load_for_shutdown(self):
+        """Called from the main window's closeEvent so the app doesn't
+        hang or print QThread warnings if a load is still running when
+        the window is closed."""
+        if self._step_load_thread is not None:
+            self._step_load_thread.quit()
+            self._step_load_thread.wait(3000)
+
+    def set_pick_filter(self, display_text: str):
+        """Connected to the toolbar's selection-filter combo. Maps its
+        display text ("Any"/"Vertices"/"Edges"/"Faces"/"Solids") to the
+        internal filter value _resolve_pick_for_filter checks."""
+        mapping = {
+            "Any": "any", "Vertices": "vertex", "Edges": "edge",
+            "Faces": "face", "Solids": "solid",
+        }
+        self._pick_filter = mapping.get(display_text, "any")
+
+    def _resolve_pick_for_filter(self, obj):
+        """Applies the current selection filter (self._pick_filter, one of
+        "any"/"vertex"/"edge"/"face"/"solid", set from the toolbar combo)
+        to a raw pick.
+
+        Returns the object to hand to downstream consumers (possibly a
+        synthesized _SolidPickMarker standing in for a whole solid), or
+        the _PICK_REJECTED sentinel if this pick doesn't match the active
+        filter and should be dropped outright.
+        """
+        pick_filter = getattr(self, "_pick_filter", "any")
+        if pick_filter == "any" or obj is None:
+            return obj
+
+        info = self._step_entity_info.get(id(obj))
+        if info is None:
+            return obj  # let the normal "Selection cleared" path handle it
+
+        if pick_filter in ("vertex", "edge", "face"):
+            if info["type"] != pick_filter:
+                self.step_status_label.setText(
+                    f"Selection filter is set to '{pick_filter}s' - clicked a "
+                    f"{info['type']}, ignored. Change the filter or click a matching entity."
+                )
+                return _PICK_REJECTED
+            return obj
+
+        if pick_filter == "solid":
+            if info["type"] != "face":
+                self.step_status_label.setText(
+                    "Selection filter is set to 'solids' - click a face belonging to the "
+                    "solid you want (every solid's surface is covered by its own faces; "
+                    "edges/vertices aren't individually grouped by solid)."
+                )
+                return _PICK_REJECTED
+
+            solid_index = info.get("solid_index")
+            if solid_index is None:
+                self.step_status_label.setText(
+                    "This part's solids couldn't be distinguished (this compas_occ "
+                    "version didn't expose per-solid grouping) - selecting the individual face instead."
+                )
+                return obj
+
+            aggregated_points = np.concatenate([
+                entry["points"] for entry in self._step_entity_info.values()
+                if entry.get("solid_index") == solid_index
+            ], axis=0)
+            marker = _SolidPickMarker()
+            self._pick_markers.append(marker)
+            self._step_entity_info[id(marker)] = {
+                "type": "solid", "index": solid_index, "points": aggregated_points,
+            }
+            return marker
+
+        return obj
+
+    def _resolve_entity_info_for_renderer(self, obj):
+        if obj is None:
+            return None
+        return self._step_entity_info.get(id(obj)) if getattr(self, "_step_entity_info", None) is not None else None
+
     def _on_step_entity_picked(self, obj):
-        """Show info about whichever face/edge/vertex was just clicked."""
+        """Show info about whichever face/edge/vertex/solid was just
+        clicked.
+
+        The active selection filter (self._pick_filter) is applied first
+        - see _resolve_pick_for_filter - before this pick is offered to
+        any tool: a measurement slot (A or B) currently armed via the
+        Measure tab, or a datum slot (Primary/Secondary/Tertiary) armed
+        via the GD&T Position tab. See _measure_on_pick and _datum_on_pick.
+        """
+        obj = self._resolve_pick_for_filter(obj)
+        if obj is _PICK_REJECTED:
+            return
+
+        if getattr(self, "_measure_on_pick", None) is not None and self._measure_on_pick(obj):
+            return
+        if getattr(self, "_datum_on_pick", None) is not None and self._datum_on_pick(obj):
+            return
+
         info = self._step_entity_info.get(id(obj)) if obj is not None else None
         if info is None:
             self.step_status_label.setText("Selection cleared.")
@@ -304,3 +485,9 @@ class StepViewerMixin:
             self.step_status_label.setText(f"Selected: Edge #{idx}")
         elif kind == "vertex":
             self.step_status_label.setText(f"Selected: Vertex #{idx}")
+        elif kind == "solid":
+            n_faces = sum(
+                1 for entry in self._step_entity_info.values()
+                if entry.get("solid_index") == idx and entry["type"] == "face"
+            )
+            self.step_status_label.setText(f"Selected: Solid #{idx} (whole body, {n_faces} faces)")

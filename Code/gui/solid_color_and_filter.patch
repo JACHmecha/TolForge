@@ -1,0 +1,847 @@
+diff --git a/Code/gui/app.py b/Code/gui/app.py
+index a2a9c62..4d759d1 100644
+--- a/Code/gui/app.py
++++ b/Code/gui/app.py
+@@ -63,11 +63,11 @@ if os.name == "nt":
+ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ 
+ from PySide6.QtWidgets import (
+-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
++    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+     QTableWidget, QPushButton, QLabel, QComboBox,
+     QHeaderView, QLineEdit,
+     QCheckBox, QDoubleSpinBox, QSpinBox,
+-    QTabWidget, QFrame, QSizePolicy
++    QTabWidget, QFrame, QSizePolicy, QScrollArea
+ )
+ from PySide6.QtCore import Qt
+ 
+@@ -81,11 +81,16 @@ from gui.step_viewer_mixin import StepViewerMixin
+ from gui.dimension_bank_mixin import DimensionBankMixin
+ from gui.analysis_mixin import AnalysisMixin
+ from gui.measurement_mixin import MeasurementMixin
++from gui.eclipse_mixin import EclipseMixin
++from gui.gdt_mixin import GdtMixin, PATTERN_COLUMNS
+ 
+ COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+/-)", "Cpk (optional)"]
+ 
+ 
+-class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin, MeasurementMixin):
++class TolstackWindow(
++    QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin,
++    MeasurementMixin, EclipseMixin, GdtMixin,
++):
+     def __init__(self):
+         super().__init__()
+         self.setWindowTitle("Tol-Forge: Tolerance Stack Analysis")
+@@ -106,7 +111,10 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         self._step_load_thread = None
+         self._step_load_worker = None
+         self._step_load_generation = 0
++        self._pick_filter = "any"
++        self._pick_markers = []
+         self._measure_init_state()
++        self._gdt_init_state()
+ 
+         central = QWidget()
+         self.setCentralWidget(central)
+@@ -246,12 +254,15 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         for key, caption in [
+             ("min", "Min distance:"), ("max", "Max distance:"),
+             ("normal", "Normal distance:"), ("xyz", "Offset (X/Y/Z):"),
+-            ("angle", "Angle:"),
++            ("angle", "Angle:"), ("radius_a", "Diameter A (if circular):"),
++            ("radius_b", "Diameter B (if circular):"),
++            ("circle_center", "Circle center offset:"),
+         ]:
+             row = QHBoxLayout()
+             caption_label = QLabel(caption)
+             caption_label.setStyleSheet("font-weight: bold;")
+             value_label = QLabel("-")
++            value_label.setWordWrap(True)
+             self.measure_result_labels[key] = value_label
+             row.addWidget(caption_label)
+             row.addWidget(value_label, stretch=1)
+@@ -286,9 +297,281 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         add_to_bank_btn.clicked.connect(self.add_measurement_to_bank)
+         measure_layout.addWidget(add_to_bank_btn)
+ 
++        diameter_bank_row = QHBoxLayout()
++        add_diameter_a_btn = QPushButton("Bank diameter A")
++        add_diameter_a_btn.clicked.connect(self.add_circle_diameter_a_to_bank)
++        add_diameter_b_btn = QPushButton("Bank diameter B")
++        add_diameter_b_btn.clicked.connect(self.add_circle_diameter_b_to_bank)
++        diameter_bank_row.addWidget(add_diameter_a_btn)
++        diameter_bank_row.addWidget(add_diameter_b_btn)
++        measure_layout.addLayout(diameter_bank_row)
++
+         measure_layout.addStretch(1)
+         sidebar.addTab(measure_tab, "Measure")
+ 
++        # --- Tab 5: Eclipse (LED-hole vs sticker-hole occlusion) ---
++        eclipse_tab = QWidget()
++        eclipse_layout = QVBoxLayout(eclipse_tab)
++
++        eclipse_intro = QLabel(
++            "How much of an LED-hole's light gets blocked by a covering "
++            "sticker hole, given tolerances on both hole diameters and "
++            "their relative position."
++        )
++        eclipse_intro.setWordWrap(True)
++        eclipse_intro.setStyleSheet("color: #555555; font-size: 11px;")
++        eclipse_layout.addWidget(eclipse_intro)
++
++        def add_tolerance_row(layout, prefix: str, caption: str, use_measured_btn=None):
++            group = QFrame()
++            group.setFrameShape(QFrame.StyledPanel)
++            group_layout = QVBoxLayout(group)
++            header_row = QHBoxLayout()
++            header_label = QLabel(caption)
++            header_label.setStyleSheet("font-weight: bold;")
++            header_row.addWidget(header_label, stretch=1)
++            if use_measured_btn is not None:
++                btn = QPushButton(use_measured_btn[0])
++                btn.clicked.connect(use_measured_btn[1])
++                header_row.addWidget(btn)
++            group_layout.addLayout(header_row)
++
++            fields_row = QHBoxLayout()
++            for field_name, field_label, default in [
++                ("nominal", "Nominal:", "0.0"), ("tol_plus", "Tol +:", "0.0"),
++                ("tol_minus", "Tol -:", "0.0"), ("cpk", "Cpk:", ""),
++            ]:
++                fields_row.addWidget(QLabel(field_label))
++                field_input = QLineEdit(default)
++                field_input.setMaximumWidth(60)
++                if field_name == "cpk":
++                    field_input.setPlaceholderText("uniform")
++                setattr(self, f"eclipse_{prefix}_{field_name}_input", field_input)
++                fields_row.addWidget(field_input)
++            group_layout.addLayout(fields_row)
++            layout.addWidget(group)
++
++        add_tolerance_row(
++            eclipse_layout, "handle", "Handle hole diameter",
++            use_measured_btn=("Use measured A", self.use_measured_a_for_handle),
++        )
++        add_tolerance_row(
++            eclipse_layout, "sticker", "Sticker hole diameter",
++            use_measured_btn=("Use measured B", self.use_measured_b_for_sticker),
++        )
++        add_tolerance_row(eclipse_layout, "offset_x", "Position offset X")
++        add_tolerance_row(eclipse_layout, "offset_y", "Position offset Y")
++
++        use_offset_btn = QPushButton("Use measured circle-center offset (-> offset X)")
++        use_offset_btn.clicked.connect(self.use_measured_offset)
++        eclipse_layout.addWidget(use_offset_btn)
++
++        eclipse_layout.addSpacing(10)
++        run_row = QHBoxLayout()
++        run_row.addWidget(QLabel("Iterations:"))
++        self.eclipse_iterations_input = QSpinBox()
++        self.eclipse_iterations_input.setRange(100, 1000000)
++        self.eclipse_iterations_input.setSingleStep(1000)
++        self.eclipse_iterations_input.setValue(10000)
++        run_row.addWidget(self.eclipse_iterations_input)
++        run_row.addWidget(QLabel("Alarm above %:"))
++        self.eclipse_threshold_input = QLineEdit("20.0")
++        self.eclipse_threshold_input.setMaximumWidth(60)
++        run_row.addWidget(self.eclipse_threshold_input)
++        eclipse_layout.addLayout(run_row)
++
++        run_eclipse_btn = QPushButton("Run eclipse analysis")
++        run_eclipse_btn.setStyleSheet("font-weight: bold;")
++        run_eclipse_btn.clicked.connect(self.run_eclipse_analysis)
++        eclipse_layout.addWidget(run_eclipse_btn)
++
++        eclipse_results_box = QFrame()
++        eclipse_results_box.setFrameShape(QFrame.StyledPanel)
++        eclipse_results_layout = QVBoxLayout(eclipse_results_box)
++        self.eclipse_result_labels = {}
++        for key, caption in [
++            ("mean", "Mean eclipse:"), ("std", "Std dev:"),
++            ("mc_range", "Monte Carlo range:"), ("worst_case", "Exact worst case:"),
++            ("probability", "Risk:"),
++        ]:
++            row = QHBoxLayout()
++            caption_label = QLabel(caption)
++            caption_label.setStyleSheet("font-weight: bold;")
++            value_label = QLabel("-")
++            value_label.setWordWrap(True)
++            self.eclipse_result_labels[key] = value_label
++            row.addWidget(caption_label)
++            row.addWidget(value_label, stretch=1)
++            eclipse_results_layout.addLayout(row)
++        eclipse_layout.addWidget(eclipse_results_box)
++
++        self.eclipse_figure = Figure(figsize=(4, 3))
++        self.eclipse_canvas = FigureCanvasQTAgg(self.eclipse_figure)
++        self.eclipse_canvas.setMinimumHeight(240)
++        self.eclipse_canvas.setVisible(False)
++        eclipse_layout.addWidget(self.eclipse_canvas, stretch=1)
++
++        eclipse_layout.addStretch(1)
++
++        eclipse_scroll = QScrollArea()
++        eclipse_scroll.setWidgetResizable(True)
++        eclipse_scroll.setWidget(eclipse_tab)
++        eclipse_scroll.setFrameShape(QFrame.NoFrame)
++        sidebar.addTab(eclipse_scroll, "Eclipse")
++
++        # --- Tab 6: GD&T Position ---
++        gdt_tab = QWidget()
++        gdt_layout = QVBoxLayout(gdt_tab)
++
++        gdt_intro = QLabel(
++            "Position tolerance (\u2316) for a pattern of features against a "
++            "3-datum reference frame. Datums: pick a face or a circular "
++            "edge/hole for each of Primary/Secondary/Tertiary."
++        )
++        gdt_intro.setWordWrap(True)
++        gdt_intro.setStyleSheet("color: #555555; font-size: 11px;")
++        gdt_layout.addWidget(gdt_intro)
++
++        datum_box = QFrame()
++        datum_box.setFrameShape(QFrame.StyledPanel)
++        datum_box_layout = QVBoxLayout(datum_box)
++        self.datum_slot_labels = {}
++        for slot_name, arm_fn, clear_fn in [
++            ("Primary", self.datum_arm_primary, self.datum_clear_primary),
++            ("Secondary", self.datum_arm_secondary, self.datum_clear_secondary),
++            ("Tertiary", self.datum_arm_tertiary, self.datum_clear_tertiary),
++        ]:
++            row = QHBoxLayout()
++            label = QLabel(f"{slot_name}: (none)")
++            self.datum_slot_labels[slot_name] = label
++            pick_btn = QPushButton(f"Pick {slot_name}")
++            pick_btn.clicked.connect(arm_fn)
++            clear_btn = QPushButton("Clear")
++            clear_btn.clicked.connect(clear_fn)
++            row.addWidget(label, stretch=1)
++            row.addWidget(pick_btn)
++            row.addWidget(clear_btn)
++            datum_box_layout.addLayout(row)
++
++        build_drf_btn = QPushButton("Build datum reference frame")
++        build_drf_btn.setStyleSheet("font-weight: bold;")
++        build_drf_btn.clicked.connect(self.build_datum_frame)
++        datum_box_layout.addWidget(build_drf_btn)
++        self.drf_status_label = QLabel("Datum reference frame not built yet.")
++        self.drf_status_label.setWordWrap(True)
++        self.drf_status_label.setStyleSheet("font-size: 11px; color: #555555;")
++        datum_box_layout.addWidget(self.drf_status_label)
++        gdt_layout.addWidget(datum_box)
++
++        gdt_layout.addSpacing(8)
++        pattern_btn_row = QHBoxLayout()
++        pick_feature_btn = QPushButton("Pick feature for pattern")
++        pick_feature_btn.clicked.connect(self.pattern_arm_pick)
++        remove_feature_btn = QPushButton("Remove selected")
++        remove_feature_btn.clicked.connect(self.pattern_remove_selected)
++        pattern_btn_row.addWidget(pick_feature_btn)
++        pattern_btn_row.addWidget(remove_feature_btn)
++        gdt_layout.addLayout(pattern_btn_row)
++
++        self.pattern_table = QTableWidget(0, len(PATTERN_COLUMNS))
++        self.pattern_table.setHorizontalHeaderLabels(PATTERN_COLUMNS)
++        self.pattern_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
++        self.pattern_table.horizontalHeader().setMinimumSectionSize(55)
++        self.pattern_table.resizeColumnsToContents()
++        self.pattern_table.setMinimumHeight(150)
++        gdt_layout.addWidget(self.pattern_table)
++
++        callout_box = QFrame()
++        callout_box.setFrameShape(QFrame.StyledPanel)
++        callout_layout = QGridLayout(callout_box)
++        callout_layout.setHorizontalSpacing(12)
++        callout_layout.setVerticalSpacing(4)
++
++        def add_callout_field(row, col, label_text, widget):
++            label = QLabel(label_text)
++            label.setStyleSheet("font-size: 11px; color: #555555;")
++            cell_layout = QVBoxLayout()
++            cell_layout.setContentsMargins(0, 0, 0, 0)
++            cell_layout.setSpacing(2)
++            cell_layout.addWidget(label)
++            cell_layout.addWidget(widget)
++            callout_layout.addLayout(cell_layout, row, col)
++
++        self.gdt_base_tolerance_input = QLineEdit("0.1")
++        add_callout_field(0, 0, "\u2300T (position tolerance)", self.gdt_base_tolerance_input)
++
++        self.gdt_modifier_combo = QComboBox()
++        self.gdt_modifier_combo.addItems(["RFS", "MMC", "LMC"])
++        add_callout_field(0, 1, "Modifier", self.gdt_modifier_combo)
++
++        self.gdt_mmc_size_input = QLineEdit("0.0")
++        add_callout_field(1, 0, "MMC size", self.gdt_mmc_size_input)
++
++        self.gdt_lmc_size_input = QLineEdit("0.0")
++        add_callout_field(1, 1, "LMC size", self.gdt_lmc_size_input)
++
++        self.gdt_feature_kind_combo = QComboBox()
++        self.gdt_feature_kind_combo.addItems(["hole", "pin"])
++        add_callout_field(2, 0, "Feature kind", self.gdt_feature_kind_combo)
++        gdt_layout.addWidget(callout_box)
++
++        eval_row = QHBoxLayout()
++        eval_row.addWidget(QLabel("Iterations:"))
++        self.gdt_iterations_input = QSpinBox()
++        self.gdt_iterations_input.setRange(100, 1000000)
++        self.gdt_iterations_input.setSingleStep(1000)
++        self.gdt_iterations_input.setValue(10000)
++        eval_row.addWidget(self.gdt_iterations_input)
++        eval_row.addWidget(QLabel("Default Cpk:"))
++        self.gdt_default_cpk_input = QLineEdit()
++        self.gdt_default_cpk_input.setPlaceholderText("uniform")
++        self.gdt_default_cpk_input.setMaximumWidth(60)
++        eval_row.addWidget(self.gdt_default_cpk_input)
++        gdt_layout.addLayout(eval_row)
++
++        eval_btn_row = QHBoxLayout()
++        eval_nominal_btn = QPushButton("Evaluate (as-modeled)")
++        eval_nominal_btn.clicked.connect(self.evaluate_pattern_deterministic)
++        eval_mc_btn = QPushButton("Run Monte Carlo")
++        eval_mc_btn.setStyleSheet("font-weight: bold;")
++        eval_mc_btn.clicked.connect(self.run_pattern_monte_carlo_analysis)
++        eval_btn_row.addWidget(eval_nominal_btn)
++        eval_btn_row.addWidget(eval_mc_btn)
++        gdt_layout.addLayout(eval_btn_row)
++
++        gdt_results_box = QFrame()
++        gdt_results_box.setFrameShape(QFrame.StyledPanel)
++        gdt_results_layout = QVBoxLayout(gdt_results_box)
++        self.gdt_result_labels = {}
++        for key, caption in [
++            ("nominal", "As-modeled:"), ("pattern_fail_rate", "Pattern fail rate:"),
++            ("per_feature", "Per-feature fail rate:"),
++        ]:
++            row = QHBoxLayout()
++            caption_label = QLabel(caption)
++            caption_label.setStyleSheet("font-weight: bold;")
++            value_label = QLabel("-")
++            value_label.setWordWrap(True)
++            self.gdt_result_labels[key] = value_label
++            row.addWidget(caption_label)
++            row.addWidget(value_label, stretch=1)
++            gdt_results_layout.addLayout(row)
++        gdt_layout.addWidget(gdt_results_box)
++
++        self.gdt_figure = Figure(figsize=(4, 3))
++        self.gdt_canvas = FigureCanvasQTAgg(self.gdt_figure)
++        self.gdt_canvas.setMinimumHeight(240)
++        self.gdt_canvas.setVisible(False)
++        gdt_layout.addWidget(self.gdt_canvas, stretch=1)
++
++        gdt_layout.addStretch(1)
++
++        gdt_scroll = QScrollArea()
++        gdt_scroll.setWidgetResizable(True)
++        gdt_scroll.setWidget(gdt_tab)
++        gdt_scroll.setFrameShape(QFrame.NoFrame)
++        sidebar.addTab(gdt_scroll, "GD&T Position")
++
+         root_layout.addWidget(sidebar, stretch=0)
+ 
+         # ==================================================================
+@@ -362,6 +645,17 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         )
+         toolbar_layout.addWidget(self.step_deflection_input)
+ 
++        toolbar_layout.addWidget(QLabel("Select:"))
++        self.pick_filter_combo = QComboBox()
++        self.pick_filter_combo.addItems(["Any", "Vertices", "Edges", "Faces", "Solids"])
++        self.pick_filter_combo.setToolTip(
++            "Restricts what a click in the viewport can select. 'Solids' "
++            "selects a whole body (via its faces) at once - useful for "
++            "picking a whole part in an assembly rather than one face."
++        )
++        self.pick_filter_combo.currentTextChanged.connect(self.set_pick_filter)
++        toolbar_layout.addWidget(self.pick_filter_combo)
++
+         load_step_btn = QPushButton("Load STEP")
+         load_step_btn.clicked.connect(self.load_step_file)
+         toolbar_layout.addWidget(load_step_btn)
+diff --git a/Code/gui/measurement_mixin.py b/Code/gui/measurement_mixin.py
+index 13a0eea..69908a0 100644
+--- a/Code/gui/measurement_mixin.py
++++ b/Code/gui/measurement_mixin.py
+@@ -105,6 +105,7 @@ class MeasurementMixin:
+ 
+         slot = self._measure_arm
+         self._measure_slot[slot] = info
++        self._measure_ensure_circle_fit(info)
+         self._measure_arm = None
+         self._measure_update_slot_labels()
+ 
+@@ -124,7 +125,11 @@ class MeasurementMixin:
+             if info is None:
+                 label_widget.setText(f"{slot}: (none)")
+             else:
+-                label_widget.setText(f"{slot}: {info['type'].capitalize()} #{info['index']}")
++                text = f"{slot}: {info['type'].capitalize()} #{info['index']}"
++                circle = info.get("circle")
++                if circle is not None:
++                    text += f"  (\u2300{circle['radius'] * 2:.4f})"
++                label_widget.setText(text)
+ 
+     def _measure_clear_results(self):
+         for lbl in self.measure_result_labels.values():
+@@ -161,6 +166,90 @@ class MeasurementMixin:
+             return centroid, None
+         return centroid, vector / norm
+ 
++    def _measure_ensure_circle_fit(self, info: dict):
++        """Lazily fits and caches a circle on this entity (stored on the
++        same dict that lives in self._step_entity_info, so re-picking the
++        same face/edge later - even into a different slot - reuses the
++        fit instead of recomputing it).
++
++        Doesn't try to guess up front whether the entity actually IS a
++        circular feature (a straight edge, for instance, will still get
++        "fit" to some circle) - the rms_residual field in the result is
++        the honest signal for that; a large residual relative to the
++        radius means the shape doesn't look like a circle, but that's
++        left for the caller/UI to flag rather than silently refusing.
++
++        Only fits face/edge entities - a whole-solid selection (from the
++        toolbar's "Solids" pick filter) aggregates points spanning the
++        entire 3D body, not a single roughly-planar feature, so a "circle
++        fit" on that data would just be numeric noise rather than a
++        meaningful failure signal via rms_residual; better to refuse it
++        outright than let a nonsense fit through.
++        """
++        if "circle" in info:
++            return
++        if info["type"] not in ("face", "edge") or len(info["points"]) < 3:
++            info["circle"] = None
++            return
++        info["circle"] = self._fit_circle(np.asarray(info["points"], dtype=float))
++
++    @staticmethod
++    def _fit_circle(points: np.ndarray):
++        """Fits a circle to a (roughly) planar point cloud: best-fit
++        plane via SVD, then an algebraic least-squares circle fit
++        (Kasa's method) within that plane.
++
++        Deliberately doesn't reuse _fit_normal_or_direction: that method
++        uses the LARGEST singular vector as an edge's "direction", which
++        is right for a straight edge but wrong here - a circular loop of
++        points is close to isotropic in-plane (similar spread in both
++        in-plane directions) with most of its remaining variance out of
++        plane, so - like a face - the correct normal is the SMALLEST
++        singular vector, regardless of whether the entity happens to be
++        labeled "face" or "edge".
++
++        Returns a dict with "center" (3D point), "radius", "normal", and
++        "rms_residual" (root-mean-square of each point's radial error
++        against the fitted circle, in the same units as the geometry -
++        large relative to the radius is a sign this wasn't actually a
++        circular feature). Returns None if the fit is degenerate (e.g.
++        all points collinear).
++        """
++        centroid = points.mean(axis=0)
++        centered = points - centroid
++        try:
++            _u, _s, vt = np.linalg.svd(centered, full_matrices=False)
++        except np.linalg.LinAlgError:
++            return None
++
++        normal = vt[-1]
++        u_axis, v_axis = vt[0], vt[1]
++
++        local = centered @ np.column_stack([u_axis, v_axis])  # (N, 2) in-plane coords
++
++        # Algebraic (Kasa) circle fit: x^2 + y^2 = D*x + E*y + F, solved
++        # as a plain linear least squares for (D, E, F).
++        design = np.column_stack([local[:, 0], local[:, 1], np.ones(len(local))])
++        rhs = local[:, 0] ** 2 + local[:, 1] ** 2
++        try:
++            solution, *_ = np.linalg.lstsq(design, rhs, rcond=None)
++        except np.linalg.LinAlgError:
++            return None
++        d_coef, e_coef, f_coef = solution
++        center_local = np.array([d_coef / 2, e_coef / 2])
++        radius_sq = f_coef + center_local[0] ** 2 + center_local[1] ** 2
++        if radius_sq <= 0:
++            return None
++        radius = float(np.sqrt(radius_sq))
++
++        center_3d = centroid + center_local[0] * u_axis + center_local[1] * v_axis
++        residuals = np.linalg.norm(local - center_local, axis=1) - radius
++        rms_residual = float(np.sqrt(np.mean(residuals**2)))
++
++        return {
++            "center": center_3d, "radius": radius, "normal": normal, "rms_residual": rms_residual,
++        }
++
+     def _measure_compute(self):
+         info_a, info_b = self._measure_slot["A"], self._measure_slot["B"]
+         pts_a = np.asarray(info_a["points"], dtype=float)
+@@ -208,6 +297,26 @@ class MeasurementMixin:
+             cos_angle = np.clip(abs(np.dot(normal_a, normal_b)), -1.0, 1.0)
+             angle_deg = float(np.degrees(np.arccos(cos_angle)))
+ 
++        circle_a, circle_b = info_a.get("circle"), info_b.get("circle")
++        circle_center_distance = None
++        if circle_a is not None and circle_b is not None:
++            # Radial offset between the two fitted circle centers,
++            # projected into the plane perpendicular to their (shared)
++            # axis - this is the number that matters for e.g. a hole in
++            # one part vs. a hole in another part stacked along the same
++            # axis (LED hole vs. sticker hole): any separation ALONG the
++            # axis is just the gap between the parts and irrelevant to
++            # how well the two apertures line up.
++            axis_a, axis_b = circle_a["normal"], circle_b["normal"]
++            if np.dot(axis_a, axis_b) < 0:
++                axis_b = -axis_b
++            axis = axis_a + axis_b
++            axis_norm = np.linalg.norm(axis)
++            axis = axis / axis_norm if axis_norm > 0 else axis_a
++            delta_c = circle_b["center"] - circle_a["center"]
++            radial_vec = delta_c - axis * np.dot(delta_c, axis)
++            circle_center_distance = float(np.linalg.norm(radial_vec))
++
+         self._measure_last = {
+             "min_distance": min_distance,
+             "max_distance": max_distance,
+@@ -216,6 +325,9 @@ class MeasurementMixin:
+             "reference_normal": reference_normal,
+             "reference_is_face": reference_is_face,
+             "angle_deg": angle_deg,
++            "circle_a": circle_a,
++            "circle_b": circle_b,
++            "circle_center_distance": circle_center_distance,
+         }
+         self._measure_display_results()
+ 
+@@ -234,6 +346,18 @@ class MeasurementMixin:
+             f"{m['angle_deg']:.3f}\u00b0" if m["angle_deg"] is not None
+             else "N/A (need two faces/edges)"
+         )
++        labels["radius_a"].setText(
++            f"\u2205{m['circle_a']['radius']*2:.4f}  (fit residual {m['circle_a']['rms_residual']:.4f})"
++            if m["circle_a"] is not None else "N/A (A not recognized as circular)"
++        )
++        labels["radius_b"].setText(
++            f"\u2205{m['circle_b']['radius']*2:.4f}  (fit residual {m['circle_b']['rms_residual']:.4f})"
++            if m["circle_b"] is not None else "N/A (B not recognized as circular)"
++        )
++        labels["circle_center"].setText(
++            f"{m['circle_center_distance']:.4f} mm" if m["circle_center_distance"] is not None
++            else "N/A (need a circle fit on both A and B)"
++        )
+         self.step_status_label.setText(
+             "Measured "
+             f"{self._measure_slot['A']['type'].capitalize()} #{self._measure_slot['A']['index']} "
+@@ -350,7 +474,10 @@ class MeasurementMixin:
+             QMessageBox.warning(self, "No measurement", "Measure two entities first.")
+             return
+ 
+-        if self._measure_last["normal_distance"] is not None:
++        if self._measure_last.get("circle_center_distance") is not None:
++            nominal = self._measure_last["circle_center_distance"]
++            suffix = " (circle center offset)"
++        elif self._measure_last["normal_distance"] is not None:
+             nominal = self._measure_last["normal_distance"]
+             suffix = ""
+         elif self._measure_last["angle_deg"] is not None:
+@@ -397,3 +524,53 @@ class MeasurementMixin:
+             self, "Added",
+             f"'{name}' added to the dimension bank ({nominal:.4f}{suffix or ' mm'})."
+         )
++
++    def add_circle_diameter_a_to_bank(self):
++        self._add_circle_diameter_to_bank("A")
++
++    def add_circle_diameter_b_to_bank(self):
++        self._add_circle_diameter_to_bank("B")
++
++    def _add_circle_diameter_to_bank(self, slot: str):
++        """Banks a single fitted circle's diameter on its own - for a
++        hole's diameter and its manufacturing tolerance, independent of
++        any second entity/feature."""
++        info = self._measure_slot.get(slot)
++        if info is None or info.get("circle") is None:
++            QMessageBox.warning(
++                self, "No circle fit",
++                f"Point {slot} isn't set, or wasn't recognized as a circular feature."
++            )
++            return
++
++        diameter = info["circle"]["radius"] * 2
++        default_name = f"{info['type'].capitalize()}{info['index']}_diameter"
++        name, ok = QInputDialog.getText(self, "Add to dimension bank", "Name:", text=default_name)
++        if not ok or not name.strip():
++            return
++        name = name.strip()
++
++        try:
++            tol_plus = float(self.measure_tol_plus_input.text() or 0.0)
++            tol_minus = float(self.measure_tol_minus_input.text() or 0.0)
++        except ValueError:
++            QMessageBox.warning(self, "Invalid tolerance", "Tol + / Tol - must be numbers.")
++            return
++
++        template = DimensionTemplate(
++            name=name, nominal=diameter, tol_plus=tol_plus, tol_minus=tol_minus, cpk=None
++        )
++        if name in self.bank.names():
++            choice = QMessageBox.question(
++                self, "Overwrite entry", f"'{name}' already exists in the bank. Overwrite it?"
++            )
++            if choice != QMessageBox.Yes:
++                return
++            self.bank.add(template, overwrite=True)
++        else:
++            self.bank.add(template)
++
++        self._refresh_bank_combo()
++        QMessageBox.information(
++            self, "Added", f"'{name}' added to the dimension bank (\u2300{diameter:.4f} mm)."
++        )
+diff --git a/Code/gui/step_viewer_mixin.py b/Code/gui/step_viewer_mixin.py
+index 6082a7a..46f3a0c 100644
+--- a/Code/gui/step_viewer_mixin.py
++++ b/Code/gui/step_viewer_mixin.py
+@@ -21,6 +21,29 @@ from compas.colors import Color
+ from .step_renderer import Renderer, detect_step_backend
+ from .step_load_worker import StepLoadWorker
+ 
++# Qualitative palette for coloring faces by which solid they belong to -
++# cycles if there are more solids than colors. Chosen for mutual
++# distinguishability (not a sequential/gradient palette) rather than for
++# any particular aesthetic theme.
++SOLID_COLOR_PALETTE = [
++    "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2",
++    "#eeca3b", "#b279a2", "#ff9da6", "#9d755d", "#bab0ac",
++]
++
++_PICK_REJECTED = object()  # sentinel: this pick didn't match the active filter
++
++
++class _SolidPickMarker:
++    """Lightweight placeholder so a synthesized 'whole solid' selection
++    (aggregating every face that shares one solid_index) can flow through
++    the same id(obj)-keyed _step_entity_info lookup every pick-consumer
++    (_measure_on_pick, _datum_on_pick, _on_step_entity_picked itself)
++    already uses for individual face/edge/vertex picks - no separate code
++    path needed in any of them for 'solid' selections.
++    """
++
++    __slots__ = ()
++
+ 
+ class StepViewerMixin:
+     """Expects the host class (TolstackWindow) to provide, from its own
+@@ -197,10 +220,26 @@ class StepViewerMixin:
+         thread = QThread(self)
+         worker = StepLoadWorker(path, deflection)
+         worker.moveToThread(thread)
++        # Stash on the worker itself rather than capturing in a lambda -
++        # see the note on connect() below for why.
++        worker.generation = generation
+ 
+         thread.started.connect(worker.run)
+-        worker.finished.connect(lambda result: self._on_step_load_finished(path, generation, worker, result))
+-        worker.failed.connect(lambda message: self._on_step_load_failed(generation, message))
++        # IMPORTANT: connect directly to bound methods of `self` (a
++        # QObject living on the main thread), not to lambdas/partials.
++        # Qt's AutoConnection only queues a cross-thread call onto the
++        # receiver's thread when it can detect the receiver's thread
++        # affinity - which it can for a QObject's bound method, but NOT
++        # for a plain Python lambda/partial (no thread affiliation to
++        # detect). With a lambda, AutoConnection silently falls back to
++        # DirectConnection, so the slot - including our GL calls in
++        # _on_step_load_finished - would run on the emitting (worker)
++        # thread instead of the main thread, which is exactly what
++        # produced "Cannot make QOpenGLContext current in a different
++        # thread". Passing QueuedConnection explicitly here removes any
++        # dependency on that auto-detection working correctly.
++        worker.finished.connect(self._on_step_load_finished, Qt.ConnectionType.QueuedConnection)
++        worker.failed.connect(self._on_step_load_failed, Qt.ConnectionType.QueuedConnection)
+         worker.finished.connect(thread.quit)
+         worker.failed.connect(thread.quit)
+         thread.finished.connect(self._cleanup_step_load_thread)
+@@ -209,17 +248,20 @@ class StepViewerMixin:
+         self._step_load_worker = worker
+         thread.start()
+ 
+-    def _on_step_load_failed(self, generation: int, message: str):
+-        if generation != self._step_load_generation:
++    def _on_step_load_failed(self, message: str):
++        worker = self._step_load_worker
++        if worker is None or worker.generation != self._step_load_generation:
+             return  # superseded by a newer load or a clear_step_preview()
+         self.step_status_label.setText(f"Failed to read/tessellate the STEP file: {message}")
+ 
+-    def _on_step_load_finished(self, path: str, generation: int, worker: StepLoadWorker, result):
+-        """Runs on the main thread (Qt queued-connection default for
+-        cross-thread signals) - safe to touch the GL context here.
++    def _on_step_load_finished(self, result):
++        """Runs on the main thread, now that the connect() above forces
++        QueuedConnection - safe to touch the GL context here.
+         """
+-        if generation != self._step_load_generation:
++        worker = self._step_load_worker
++        if worker is None or worker.generation != self._step_load_generation:
+             return  # superseded by a newer load or a clear_step_preview() in the meantime
++        path = worker.path
+ 
+         try:
+             scene = self._step_preview_renderer.scene
+@@ -235,11 +277,24 @@ class StepViewerMixin:
+ 
+             self._step_entity_info = {}
+ 
+-            face_color = Color.from_hex("#4c78a8")
++            # Faces are colored per-solid (cycling through this palette) so
++            # separate bodies in an assembly are easy to tell apart at a
++            # glance. Edges/vertices stay a fixed neutral color regardless
++            # of which solid they belong to - they aren't grouped by solid
++            # the way faces are (see step_load_worker.py's
++            # _group_faces_by_solid docstring for why), and keeping them
++            # neutral also reads better visually as wireframe/point accents
++            # against the colored, shaded faces.
+             edge_color = Color.from_hex("#1f2d3d")
+             vertex_color = Color.from_hex("#e45756")
+ 
++            solid_palette = [
++                Color.from_hex(hex_code) for hex_code in SOLID_COLOR_PALETTE
++            ]
++
+             for i, face_mesh in enumerate(result.face_meshes):
++                solid_index = result.face_solid_indices[i] if i < len(result.face_solid_indices) else 0
++                face_color = solid_palette[solid_index % len(solid_palette)]
+                 try:
+                     obj = scene.add(
+                         face_mesh, show_faces=True, show_lines=False, facecolor=face_color
+@@ -253,6 +308,7 @@ class StepViewerMixin:
+                     )
+                     self._step_entity_info[id(obj)] = {
+                         "type": "face", "index": i, "points": points, "mesh": face_mesh,
++                        "solid_index": solid_index,
+                     }
+ 
+             for i, polyline in enumerate(result.edge_polylines):
+@@ -297,10 +353,11 @@ class StepViewerMixin:
+             QApplication.processEvents()
+ 
+             lod_note = "" if worker.deflection_applied else " (quality setting not supported by this compas_occ version - used its default)"
++            solid_count = len(set(result.face_solid_indices)) if result.face_solid_indices else 0
+             self.step_status_label.setText(
+                 f"Loaded: {Path(path).name}\n"
+-                f"Faces: {len(result.face_meshes)}  Edges: {len(result.edge_polylines)}  "
+-                f"Vertices: {len(result.vertex_points)}\n"
++                f"Solids: {solid_count}  Faces: {len(result.face_meshes)}  "
++                f"Edges: {len(result.edge_polylines)}  Vertices: {len(result.vertex_points)}\n"
+                 f"Left-click a face/edge/vertex to select it.{lod_note}"
+             )
+         except Exception as exc:  # pragma: no cover - runtime environment specific
+@@ -322,15 +379,91 @@ class StepViewerMixin:
+             self._step_load_thread.quit()
+             self._step_load_thread.wait(3000)
+ 
+-    def _on_step_entity_picked(self, obj):
+-        """Show info about whichever face/edge/vertex was just clicked.
++    def set_pick_filter(self, display_text: str):
++        """Connected to the toolbar's selection-filter combo. Maps its
++        display text ("Any"/"Vertices"/"Edges"/"Faces"/"Solids") to the
++        internal filter value _resolve_pick_for_filter checks."""
++        mapping = {
++            "Any": "any", "Vertices": "vertex", "Edges": "edge",
++            "Faces": "face", "Solids": "solid",
++        }
++        self._pick_filter = mapping.get(display_text, "any")
++
++    def _resolve_pick_for_filter(self, obj):
++        """Applies the current selection filter (self._pick_filter, one of
++        "any"/"vertex"/"edge"/"face"/"solid", set from the toolbar combo)
++        to a raw pick.
++
++        Returns the object to hand to downstream consumers (possibly a
++        synthesized _SolidPickMarker standing in for a whole solid), or
++        the _PICK_REJECTED sentinel if this pick doesn't match the active
++        filter and should be dropped outright.
++        """
++        pick_filter = getattr(self, "_pick_filter", "any")
++        if pick_filter == "any" or obj is None:
++            return obj
+ 
+-        If a measurement slot (A or B) is currently armed via the Measure
+-        tab, this pick is consumed by MeasurementMixin instead of just
+-        updating the status label - see _measure_on_pick.
++        info = self._step_entity_info.get(id(obj))
++        if info is None:
++            return obj  # let the normal "Selection cleared" path handle it
++
++        if pick_filter in ("vertex", "edge", "face"):
++            if info["type"] != pick_filter:
++                self.step_status_label.setText(
++                    f"Selection filter is set to '{pick_filter}s' - clicked a "
++                    f"{info['type']}, ignored. Change the filter or click a matching entity."
++                )
++                return _PICK_REJECTED
++            return obj
++
++        if pick_filter == "solid":
++            if info["type"] != "face":
++                self.step_status_label.setText(
++                    "Selection filter is set to 'solids' - click a face belonging to the "
++                    "solid you want (every solid's surface is covered by its own faces; "
++                    "edges/vertices aren't individually grouped by solid)."
++                )
++                return _PICK_REJECTED
++
++            solid_index = info.get("solid_index")
++            if solid_index is None:
++                self.step_status_label.setText(
++                    "This part's solids couldn't be distinguished (this compas_occ "
++                    "version didn't expose per-solid grouping) - selecting the individual face instead."
++                )
++                return obj
++
++            aggregated_points = np.concatenate([
++                entry["points"] for entry in self._step_entity_info.values()
++                if entry.get("solid_index") == solid_index
++            ], axis=0)
++            marker = _SolidPickMarker()
++            self._pick_markers.append(marker)
++            self._step_entity_info[id(marker)] = {
++                "type": "solid", "index": solid_index, "points": aggregated_points,
++            }
++            return marker
++
++        return obj
++
++    def _on_step_entity_picked(self, obj):
++        """Show info about whichever face/edge/vertex/solid was just
++        clicked.
++
++        The active selection filter (self._pick_filter) is applied first
++        - see _resolve_pick_for_filter - before this pick is offered to
++        any tool: a measurement slot (A or B) currently armed via the
++        Measure tab, or a datum slot (Primary/Secondary/Tertiary) armed
++        via the GD&T Position tab. See _measure_on_pick and _datum_on_pick.
+         """
++        obj = self._resolve_pick_for_filter(obj)
++        if obj is _PICK_REJECTED:
++            return
++
+         if getattr(self, "_measure_on_pick", None) is not None and self._measure_on_pick(obj):
+             return
++        if getattr(self, "_datum_on_pick", None) is not None and self._datum_on_pick(obj):
++            return
+ 
+         info = self._step_entity_info.get(id(obj)) if obj is not None else None
+         if info is None:
+@@ -345,3 +478,9 @@ class StepViewerMixin:
+             self.step_status_label.setText(f"Selected: Edge #{idx}")
+         elif kind == "vertex":
+             self.step_status_label.setText(f"Selected: Vertex #{idx}")
++        elif kind == "solid":
++            n_faces = sum(
++                1 for entry in self._step_entity_info.values()
++                if entry.get("solid_index") == idx and entry["type"] == "face"
++            )
++            self.step_status_label.setText(f"Selected: Solid #{idx} (whole body, {n_faces} faces)")

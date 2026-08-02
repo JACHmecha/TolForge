@@ -1,0 +1,389 @@
+diff --git a/Code/gui/app.py b/Code/gui/app.py
+index a2a9c62..f4c6884 100644
+--- a/Code/gui/app.py
++++ b/Code/gui/app.py
+@@ -81,11 +81,12 @@ from gui.step_viewer_mixin import StepViewerMixin
+ from gui.dimension_bank_mixin import DimensionBankMixin
+ from gui.analysis_mixin import AnalysisMixin
+ from gui.measurement_mixin import MeasurementMixin
++from gui.eclipse_mixin import EclipseMixin
+ 
+ COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "Sign (+/-)", "Cpk (optional)"]
+ 
+ 
+-class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin, MeasurementMixin):
++class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin, MeasurementMixin, EclipseMixin):
+     def __init__(self):
+         super().__init__()
+         self.setWindowTitle("Tol-Forge: Tolerance Stack Analysis")
+@@ -246,12 +247,15 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         for key, caption in [
+             ("min", "Min distance:"), ("max", "Max distance:"),
+             ("normal", "Normal distance:"), ("xyz", "Offset (X/Y/Z):"),
+-            ("angle", "Angle:"),
++            ("angle", "Angle:"), ("radius_a", "Diameter A (if circular):"),
++            ("radius_b", "Diameter B (if circular):"),
++            ("circle_center", "Circle center offset:"),
+         ]:
+             row = QHBoxLayout()
+             caption_label = QLabel(caption)
+             caption_label.setStyleSheet("font-weight: bold;")
+             value_label = QLabel("-")
++            value_label.setWordWrap(True)
+             self.measure_result_labels[key] = value_label
+             row.addWidget(caption_label)
+             row.addWidget(value_label, stretch=1)
+@@ -286,9 +290,122 @@ class TolstackWindow(QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisM
+         add_to_bank_btn.clicked.connect(self.add_measurement_to_bank)
+         measure_layout.addWidget(add_to_bank_btn)
+ 
++        diameter_bank_row = QHBoxLayout()
++        add_diameter_a_btn = QPushButton("Bank diameter A")
++        add_diameter_a_btn.clicked.connect(self.add_circle_diameter_a_to_bank)
++        add_diameter_b_btn = QPushButton("Bank diameter B")
++        add_diameter_b_btn.clicked.connect(self.add_circle_diameter_b_to_bank)
++        diameter_bank_row.addWidget(add_diameter_a_btn)
++        diameter_bank_row.addWidget(add_diameter_b_btn)
++        measure_layout.addLayout(diameter_bank_row)
++
+         measure_layout.addStretch(1)
+         sidebar.addTab(measure_tab, "Measure")
+ 
++        # --- Tab 5: Eclipse (LED-hole vs sticker-hole occlusion) ---
++        eclipse_tab = QWidget()
++        eclipse_layout = QVBoxLayout(eclipse_tab)
++
++        eclipse_intro = QLabel(
++            "How much of an LED-hole's light gets blocked by a covering "
++            "sticker hole, given tolerances on both hole diameters and "
++            "their relative position."
++        )
++        eclipse_intro.setWordWrap(True)
++        eclipse_intro.setStyleSheet("color: #555555; font-size: 11px;")
++        eclipse_layout.addWidget(eclipse_intro)
++
++        def add_tolerance_row(layout, prefix: str, caption: str, use_measured_btn=None):
++            group = QFrame()
++            group.setFrameShape(QFrame.StyledPanel)
++            group_layout = QVBoxLayout(group)
++            header_row = QHBoxLayout()
++            header_label = QLabel(caption)
++            header_label.setStyleSheet("font-weight: bold;")
++            header_row.addWidget(header_label, stretch=1)
++            if use_measured_btn is not None:
++                btn = QPushButton(use_measured_btn[0])
++                btn.clicked.connect(use_measured_btn[1])
++                header_row.addWidget(btn)
++            group_layout.addLayout(header_row)
++
++            fields_row = QHBoxLayout()
++            for field_name, field_label, default in [
++                ("nominal", "Nominal:", "0.0"), ("tol_plus", "Tol +:", "0.0"),
++                ("tol_minus", "Tol -:", "0.0"), ("cpk", "Cpk:", ""),
++            ]:
++                fields_row.addWidget(QLabel(field_label))
++                field_input = QLineEdit(default)
++                field_input.setMaximumWidth(60)
++                if field_name == "cpk":
++                    field_input.setPlaceholderText("uniform")
++                setattr(self, f"eclipse_{prefix}_{field_name}_input", field_input)
++                fields_row.addWidget(field_input)
++            group_layout.addLayout(fields_row)
++            layout.addWidget(group)
++
++        add_tolerance_row(
++            eclipse_layout, "handle", "Handle hole diameter",
++            use_measured_btn=("Use measured A", self.use_measured_a_for_handle),
++        )
++        add_tolerance_row(
++            eclipse_layout, "sticker", "Sticker hole diameter",
++            use_measured_btn=("Use measured B", self.use_measured_b_for_sticker),
++        )
++        add_tolerance_row(eclipse_layout, "offset_x", "Position offset X")
++        add_tolerance_row(eclipse_layout, "offset_y", "Position offset Y")
++
++        use_offset_btn = QPushButton("Use measured circle-center offset (-> offset X)")
++        use_offset_btn.clicked.connect(self.use_measured_offset)
++        eclipse_layout.addWidget(use_offset_btn)
++
++        eclipse_layout.addSpacing(10)
++        run_row = QHBoxLayout()
++        run_row.addWidget(QLabel("Iterations:"))
++        self.eclipse_iterations_input = QSpinBox()
++        self.eclipse_iterations_input.setRange(100, 1000000)
++        self.eclipse_iterations_input.setSingleStep(1000)
++        self.eclipse_iterations_input.setValue(10000)
++        run_row.addWidget(self.eclipse_iterations_input)
++        run_row.addWidget(QLabel("Alarm above %:"))
++        self.eclipse_threshold_input = QLineEdit("20.0")
++        self.eclipse_threshold_input.setMaximumWidth(60)
++        run_row.addWidget(self.eclipse_threshold_input)
++        eclipse_layout.addLayout(run_row)
++
++        run_eclipse_btn = QPushButton("Run eclipse analysis")
++        run_eclipse_btn.setStyleSheet("font-weight: bold;")
++        run_eclipse_btn.clicked.connect(self.run_eclipse_analysis)
++        eclipse_layout.addWidget(run_eclipse_btn)
++
++        eclipse_results_box = QFrame()
++        eclipse_results_box.setFrameShape(QFrame.StyledPanel)
++        eclipse_results_layout = QVBoxLayout(eclipse_results_box)
++        self.eclipse_result_labels = {}
++        for key, caption in [
++            ("mean", "Mean eclipse:"), ("std", "Std dev:"),
++            ("mc_range", "Monte Carlo range:"), ("worst_case", "Exact worst case:"),
++            ("probability", "Risk:"),
++        ]:
++            row = QHBoxLayout()
++            caption_label = QLabel(caption)
++            caption_label.setStyleSheet("font-weight: bold;")
++            value_label = QLabel("-")
++            value_label.setWordWrap(True)
++            self.eclipse_result_labels[key] = value_label
++            row.addWidget(caption_label)
++            row.addWidget(value_label, stretch=1)
++            eclipse_results_layout.addLayout(row)
++        eclipse_layout.addWidget(eclipse_results_box)
++
++        self.eclipse_figure = Figure(figsize=(4, 3))
++        self.eclipse_canvas = FigureCanvasQTAgg(self.eclipse_figure)
++        self.eclipse_canvas.setVisible(False)
++        eclipse_layout.addWidget(self.eclipse_canvas, stretch=1)
++
++        eclipse_layout.addStretch(1)
++        sidebar.addTab(eclipse_tab, "Eclipse")
++
+         root_layout.addWidget(sidebar, stretch=0)
+ 
+         # ==================================================================
+diff --git a/Code/gui/measurement_mixin.py b/Code/gui/measurement_mixin.py
+index 13a0eea..b853c5f 100644
+--- a/Code/gui/measurement_mixin.py
++++ b/Code/gui/measurement_mixin.py
+@@ -105,6 +105,7 @@ class MeasurementMixin:
+ 
+         slot = self._measure_arm
+         self._measure_slot[slot] = info
++        self._measure_ensure_circle_fit(info)
+         self._measure_arm = None
+         self._measure_update_slot_labels()
+ 
+@@ -124,7 +125,11 @@ class MeasurementMixin:
+             if info is None:
+                 label_widget.setText(f"{slot}: (none)")
+             else:
+-                label_widget.setText(f"{slot}: {info['type'].capitalize()} #{info['index']}")
++                text = f"{slot}: {info['type'].capitalize()} #{info['index']}"
++                circle = info.get("circle")
++                if circle is not None:
++                    text += f"  (\u2300{circle['radius'] * 2:.4f})"
++                label_widget.setText(text)
+ 
+     def _measure_clear_results(self):
+         for lbl in self.measure_result_labels.values():
+@@ -161,6 +166,83 @@ class MeasurementMixin:
+             return centroid, None
+         return centroid, vector / norm
+ 
++    def _measure_ensure_circle_fit(self, info: dict):
++        """Lazily fits and caches a circle on this entity (stored on the
++        same dict that lives in self._step_entity_info, so re-picking the
++        same face/edge later - even into a different slot - reuses the
++        fit instead of recomputing it).
++
++        Doesn't try to guess up front whether the entity actually IS a
++        circular feature (a straight edge, for instance, will still get
++        "fit" to some circle) - the rms_residual field in the result is
++        the honest signal for that; a large residual relative to the
++        radius means the shape doesn't look like a circle, but that's
++        left for the caller/UI to flag rather than silently refusing.
++        """
++        if "circle" in info:
++            return
++        if info["type"] == "vertex" or len(info["points"]) < 3:
++            info["circle"] = None
++            return
++        info["circle"] = self._fit_circle(np.asarray(info["points"], dtype=float))
++
++    @staticmethod
++    def _fit_circle(points: np.ndarray):
++        """Fits a circle to a (roughly) planar point cloud: best-fit
++        plane via SVD, then an algebraic least-squares circle fit
++        (Kasa's method) within that plane.
++
++        Deliberately doesn't reuse _fit_normal_or_direction: that method
++        uses the LARGEST singular vector as an edge's "direction", which
++        is right for a straight edge but wrong here - a circular loop of
++        points is close to isotropic in-plane (similar spread in both
++        in-plane directions) with most of its remaining variance out of
++        plane, so - like a face - the correct normal is the SMALLEST
++        singular vector, regardless of whether the entity happens to be
++        labeled "face" or "edge".
++
++        Returns a dict with "center" (3D point), "radius", "normal", and
++        "rms_residual" (root-mean-square of each point's radial error
++        against the fitted circle, in the same units as the geometry -
++        large relative to the radius is a sign this wasn't actually a
++        circular feature). Returns None if the fit is degenerate (e.g.
++        all points collinear).
++        """
++        centroid = points.mean(axis=0)
++        centered = points - centroid
++        try:
++            _u, _s, vt = np.linalg.svd(centered, full_matrices=False)
++        except np.linalg.LinAlgError:
++            return None
++
++        normal = vt[-1]
++        u_axis, v_axis = vt[0], vt[1]
++
++        local = centered @ np.column_stack([u_axis, v_axis])  # (N, 2) in-plane coords
++
++        # Algebraic (Kasa) circle fit: x^2 + y^2 = D*x + E*y + F, solved
++        # as a plain linear least squares for (D, E, F).
++        design = np.column_stack([local[:, 0], local[:, 1], np.ones(len(local))])
++        rhs = local[:, 0] ** 2 + local[:, 1] ** 2
++        try:
++            solution, *_ = np.linalg.lstsq(design, rhs, rcond=None)
++        except np.linalg.LinAlgError:
++            return None
++        d_coef, e_coef, f_coef = solution
++        center_local = np.array([d_coef / 2, e_coef / 2])
++        radius_sq = f_coef + center_local[0] ** 2 + center_local[1] ** 2
++        if radius_sq <= 0:
++            return None
++        radius = float(np.sqrt(radius_sq))
++
++        center_3d = centroid + center_local[0] * u_axis + center_local[1] * v_axis
++        residuals = np.linalg.norm(local - center_local, axis=1) - radius
++        rms_residual = float(np.sqrt(np.mean(residuals**2)))
++
++        return {
++            "center": center_3d, "radius": radius, "normal": normal, "rms_residual": rms_residual,
++        }
++
+     def _measure_compute(self):
+         info_a, info_b = self._measure_slot["A"], self._measure_slot["B"]
+         pts_a = np.asarray(info_a["points"], dtype=float)
+@@ -208,6 +290,26 @@ class MeasurementMixin:
+             cos_angle = np.clip(abs(np.dot(normal_a, normal_b)), -1.0, 1.0)
+             angle_deg = float(np.degrees(np.arccos(cos_angle)))
+ 
++        circle_a, circle_b = info_a.get("circle"), info_b.get("circle")
++        circle_center_distance = None
++        if circle_a is not None and circle_b is not None:
++            # Radial offset between the two fitted circle centers,
++            # projected into the plane perpendicular to their (shared)
++            # axis - this is the number that matters for e.g. a hole in
++            # one part vs. a hole in another part stacked along the same
++            # axis (LED hole vs. sticker hole): any separation ALONG the
++            # axis is just the gap between the parts and irrelevant to
++            # how well the two apertures line up.
++            axis_a, axis_b = circle_a["normal"], circle_b["normal"]
++            if np.dot(axis_a, axis_b) < 0:
++                axis_b = -axis_b
++            axis = axis_a + axis_b
++            axis_norm = np.linalg.norm(axis)
++            axis = axis / axis_norm if axis_norm > 0 else axis_a
++            delta_c = circle_b["center"] - circle_a["center"]
++            radial_vec = delta_c - axis * np.dot(delta_c, axis)
++            circle_center_distance = float(np.linalg.norm(radial_vec))
++
+         self._measure_last = {
+             "min_distance": min_distance,
+             "max_distance": max_distance,
+@@ -216,6 +318,9 @@ class MeasurementMixin:
+             "reference_normal": reference_normal,
+             "reference_is_face": reference_is_face,
+             "angle_deg": angle_deg,
++            "circle_a": circle_a,
++            "circle_b": circle_b,
++            "circle_center_distance": circle_center_distance,
+         }
+         self._measure_display_results()
+ 
+@@ -234,6 +339,18 @@ class MeasurementMixin:
+             f"{m['angle_deg']:.3f}\u00b0" if m["angle_deg"] is not None
+             else "N/A (need two faces/edges)"
+         )
++        labels["radius_a"].setText(
++            f"\u2205{m['circle_a']['radius']*2:.4f}  (fit residual {m['circle_a']['rms_residual']:.4f})"
++            if m["circle_a"] is not None else "N/A (A not recognized as circular)"
++        )
++        labels["radius_b"].setText(
++            f"\u2205{m['circle_b']['radius']*2:.4f}  (fit residual {m['circle_b']['rms_residual']:.4f})"
++            if m["circle_b"] is not None else "N/A (B not recognized as circular)"
++        )
++        labels["circle_center"].setText(
++            f"{m['circle_center_distance']:.4f} mm" if m["circle_center_distance"] is not None
++            else "N/A (need a circle fit on both A and B)"
++        )
+         self.step_status_label.setText(
+             "Measured "
+             f"{self._measure_slot['A']['type'].capitalize()} #{self._measure_slot['A']['index']} "
+@@ -350,7 +467,10 @@ class MeasurementMixin:
+             QMessageBox.warning(self, "No measurement", "Measure two entities first.")
+             return
+ 
+-        if self._measure_last["normal_distance"] is not None:
++        if self._measure_last.get("circle_center_distance") is not None:
++            nominal = self._measure_last["circle_center_distance"]
++            suffix = " (circle center offset)"
++        elif self._measure_last["normal_distance"] is not None:
+             nominal = self._measure_last["normal_distance"]
+             suffix = ""
+         elif self._measure_last["angle_deg"] is not None:
+@@ -397,3 +517,53 @@ class MeasurementMixin:
+             self, "Added",
+             f"'{name}' added to the dimension bank ({nominal:.4f}{suffix or ' mm'})."
+         )
++
++    def add_circle_diameter_a_to_bank(self):
++        self._add_circle_diameter_to_bank("A")
++
++    def add_circle_diameter_b_to_bank(self):
++        self._add_circle_diameter_to_bank("B")
++
++    def _add_circle_diameter_to_bank(self, slot: str):
++        """Banks a single fitted circle's diameter on its own - for a
++        hole's diameter and its manufacturing tolerance, independent of
++        any second entity/feature."""
++        info = self._measure_slot.get(slot)
++        if info is None or info.get("circle") is None:
++            QMessageBox.warning(
++                self, "No circle fit",
++                f"Point {slot} isn't set, or wasn't recognized as a circular feature."
++            )
++            return
++
++        diameter = info["circle"]["radius"] * 2
++        default_name = f"{info['type'].capitalize()}{info['index']}_diameter"
++        name, ok = QInputDialog.getText(self, "Add to dimension bank", "Name:", text=default_name)
++        if not ok or not name.strip():
++            return
++        name = name.strip()
++
++        try:
++            tol_plus = float(self.measure_tol_plus_input.text() or 0.0)
++            tol_minus = float(self.measure_tol_minus_input.text() or 0.0)
++        except ValueError:
++            QMessageBox.warning(self, "Invalid tolerance", "Tol + / Tol - must be numbers.")
++            return
++
++        template = DimensionTemplate(
++            name=name, nominal=diameter, tol_plus=tol_plus, tol_minus=tol_minus, cpk=None
++        )
++        if name in self.bank.names():
++            choice = QMessageBox.question(
++                self, "Overwrite entry", f"'{name}' already exists in the bank. Overwrite it?"
++            )
++            if choice != QMessageBox.Yes:
++                return
++            self.bank.add(template, overwrite=True)
++        else:
++            self.bank.add(template)
++
++        self._refresh_bank_combo()
++        QMessageBox.information(
++            self, "Added", f"'{name}' added to the dimension bank (\u2300{diameter:.4f} mm)."
++        )
