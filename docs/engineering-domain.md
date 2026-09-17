@@ -16,6 +16,9 @@ indices must not be stored in this model.
   distribution. Correlated sources share a correlation-group name.
 - A `DatumReference` binds a datum label and modifier to a feature.
 - A `DatumSystem` lists datum references in precedence order.
+- A `PositionControlDefinition` binds a feature pattern to a datum system.
+  Each pattern member references separate size, X-position, and Y-position
+  tolerance sources; its actual location is derived from current CAD geometry.
 - An `AssemblyConstraint` records design intent between features on two
   occurrences. It does not solve the relationship.
 - A `ResponseDefinition` describes the key characteristic an analysis must
@@ -36,6 +39,13 @@ File menu saves and opens complete project JSON files. Stack-table rows become
 selections reference `FeatureDefinition.id`. On a STEP reload, geometric
 signatures are matched back to current scene entities; face and edge indices
 are retained only as transient renderer information.
+
+The GD&T Position tab is also an editor for the project model. Saving converts
+its rows into `PositionPatternMember` records and tolerance sources. Evaluation
+then adapts the validated project objects into the numerical GD&T engine; it no
+longer treats editable table cells as the analysis source of truth. Actual X/Y
+values are recalculated from the rematched circular feature and current datum
+reference frame whenever the project is loaded.
 
 Future format changes belong in `migrate_project_data()`. Domain constructors
 should only need to understand the current schema.

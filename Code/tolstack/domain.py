@@ -229,6 +229,64 @@ class DatumSystem:
 
 
 @dataclass
+class PositionPatternMember:
+    """One semantic feature governed by a position control."""
+
+    name: str
+    feature_id: str
+    basic_x: float
+    basic_y: float
+    size_tolerance_id: str
+    position_x_tolerance_id: str
+    position_y_tolerance_id: str
+    id: str = field(default_factory=new_id)
+
+    def __post_init__(self):
+        _require_text(self.name, "pattern member name")
+        _require_text(self.feature_id, "feature_id")
+        _require_text(self.size_tolerance_id, "size_tolerance_id")
+        _require_text(self.position_x_tolerance_id, "position_x_tolerance_id")
+        _require_text(self.position_y_tolerance_id, "position_y_tolerance_id")
+        _require_finite(self.basic_x, "basic_x")
+        _require_finite(self.basic_y, "basic_y")
+
+
+@dataclass
+class PositionControlDefinition:
+    """Persistent position feature-control frame and its feature pattern."""
+
+    name: str
+    datum_system_id: str
+    base_tolerance_diameter: float
+    modifier: str = "RFS"
+    mmc_size: float = 0.0
+    lmc_size: float = 0.0
+    feature_kind: str = "hole"
+    members: list[PositionPatternMember] = field(default_factory=list)
+    id: str = field(default_factory=new_id)
+
+    FEATURE_KINDS: ClassVar[tuple[str, ...]] = ("hole", "pin")
+
+    def __post_init__(self):
+        _require_text(self.name, "position control name")
+        _require_text(self.datum_system_id, "datum_system_id")
+        if self.modifier not in ToleranceDefinition.MODIFIERS:
+            raise ValueError(f"Unsupported material modifier '{self.modifier}'.")
+        if self.feature_kind not in self.FEATURE_KINDS:
+            raise ValueError(f"Unsupported feature kind '{self.feature_kind}'.")
+        for name, value in (
+            ("base_tolerance_diameter", self.base_tolerance_diameter),
+            ("mmc_size", self.mmc_size), ("lmc_size", self.lmc_size),
+        ):
+            _require_finite(value, name)
+        if self.base_tolerance_diameter < 0:
+            raise ValueError("Position tolerance diameter cannot be negative.")
+        member_ids = [member.id for member in self.members]
+        if len(member_ids) != len(set(member_ids)):
+            raise ValueError("A position control cannot contain duplicate member IDs.")
+
+
+@dataclass
 class AssemblyConstraint:
     """Declarative relationship between two occurrence features."""
 

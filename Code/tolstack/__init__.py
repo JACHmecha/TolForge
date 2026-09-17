@@ -17,6 +17,7 @@ from .domain import (
     AssemblyConstraint, DatumReference, DatumSystem, Distribution,
     FeatureDefinition, PartDefinition, PartOccurrence, ResponseDefinition,
     RigidTransform, ToleranceDefinition, Units, LinearStackDefinition, StackTerm,
+    PositionControlDefinition, PositionPatternMember,
 )
 from .project import CURRENT_SCHEMA_VERSION, Project
 
@@ -40,6 +41,8 @@ __all__ = [
     "ToleranceDefinition",
     "LinearStackDefinition",
     "StackTerm",
+    "PositionControlDefinition",
+    "PositionPatternMember",
     "Units",
     "CURRENT_SCHEMA_VERSION",
     "Project",

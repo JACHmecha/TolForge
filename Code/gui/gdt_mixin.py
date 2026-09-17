@@ -10,6 +10,7 @@ fits.
 """
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QInputDialog, QTableWidgetItem
 
 from tolstack.gdt import (
@@ -203,14 +204,28 @@ class GdtMixin:
         if not ok:
             return
 
-        self._pattern_add_row(name, basic_x, basic_y, x_local, y_local, circle["radius"] * 2)
+        try:
+            feature_id = self._project_register_feature(info, label=name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Could not register pattern feature", str(exc))
+            return
+        self._pattern_add_row(
+            name, basic_x, basic_y, x_local, y_local, circle["radius"] * 2,
+            feature_id=feature_id,
+        )
 
-    def _pattern_add_row(self, name, basic_x, basic_y, actual_x, actual_y, diameter):
+    def _pattern_add_row(
+        self, name, basic_x, basic_y, actual_x, actual_y, diameter,
+        feature_id=None,
+    ):
         table = self.pattern_table
         row = table.rowCount()
         table.insertRow(row)
 
-        table.setItem(row, 0, QTableWidgetItem(name))
+        name_item = QTableWidgetItem(name)
+        if feature_id and hasattr(self, "PATTERN_FEATURE_ID_ROLE"):
+            name_item.setData(self.PATTERN_FEATURE_ID_ROLE, feature_id)
+        table.setItem(row, 0, name_item)
         table.setItem(row, 1, QTableWidgetItem(f"{basic_x:.4f}"))
         table.setItem(row, 2, QTableWidgetItem(f"{basic_y:.4f}"))
         table.setItem(row, 3, QTableWidgetItem(f"{actual_x:.4f}"))
@@ -220,6 +235,9 @@ class GdtMixin:
         table.setItem(row, 7, QTableWidgetItem("0.0"))
         table.setItem(row, 8, QTableWidgetItem("0.0"))
         table.setItem(row, 9, QTableWidgetItem("-"))
+        for column in (3, 4):
+            item = table.item(row, column)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         table.resizeColumnsToContents()
 
     def pattern_remove_selected(self):
@@ -275,7 +293,7 @@ class GdtMixin:
             QMessageBox.warning(self, "No features", "Add at least one feature to the pattern first.")
             return
         try:
-            control = self._pattern_read_control()
+            control = self._project_build_pattern_control()
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid input", str(exc))
             return
@@ -297,7 +315,7 @@ class GdtMixin:
             QMessageBox.warning(self, "No features", "Add at least one feature to the pattern first.")
             return
         try:
-            control = self._pattern_read_control()
+            control = self._project_build_pattern_control()
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid input", str(exc))
             return

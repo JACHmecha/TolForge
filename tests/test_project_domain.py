@@ -10,6 +10,7 @@ from tolstack.domain import (
     AssemblyConstraint, DatumReference, DatumSystem, FeatureDefinition,
     PartDefinition, PartOccurrence, ResponseDefinition, ToleranceDefinition,
     LinearStackDefinition, StackTerm,
+    PositionControlDefinition, PositionPatternMember,
 )
 from tolstack.project import CURRENT_SCHEMA_VERSION, Project
 
@@ -42,7 +43,28 @@ def build_pin_hole_project() -> Project:
         )
     )
     datum = project.add_datum_reference(DatumReference(hole.id, "a", id="datum-a"))
-    project.add_datum_system(DatumSystem("Base DRF", [datum.id], id="drf-base"))
+    datum_system = project.add_datum_system(
+        DatumSystem("Base DRF", [datum.id], id="drf-base")
+    )
+    pos_x = project.add_tolerance(
+        ToleranceDefinition("Hole X variation", "position", 0.0, 0.05, 0.05, id="tol-x")
+    )
+    pos_y = project.add_tolerance(
+        ToleranceDefinition("Hole Y variation", "position", 0.0, 0.05, 0.05, id="tol-y")
+    )
+    project.add_position_control(
+        PositionControlDefinition(
+            "Hole position", datum_system.id, 0.2, modifier="MMC",
+            mmc_size=10.0, lmc_size=10.1,
+            members=[
+                PositionPatternMember(
+                    "Hole 1", hole.id, 0.0, 0.0,
+                    hole_tolerance.id, pos_x.id, pos_y.id, id="member-1",
+                )
+            ],
+            id="position-1",
+        )
+    )
     project.add_constraint(
         AssemblyConstraint(
             "Pin in hole", "concentric", base_occ.id, hole.id, pin_occ.id, pin.id,
@@ -67,6 +89,7 @@ def test_project_round_trip_preserves_ids_and_references(tmp_path):
     assert loaded.to_dict() == original.to_dict()
     assert loaded.constraints["constraint-1"].feature_a_id == "feature-hole"
     assert loaded.stacks["stack-1"].terms[0].tolerance_id == "tol-hole"
+    assert loaded.position_controls["position-1"].members[0].feature_id == "feature-hole"
     assert loaded.schema_version == CURRENT_SCHEMA_VERSION
 
 

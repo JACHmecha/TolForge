@@ -9,10 +9,12 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 from tolstack import (
     DatumReference, DatumSystem, Distribution, FeatureDefinition,
     LinearStackDefinition, PartDefinition, PartOccurrence, Project,
-    StackTerm, ToleranceDefinition,
+    StackTerm, ToleranceDefinition, PositionControlDefinition,
+    PositionPatternMember,
 )
 from tolstack.domain import new_id
 from tolstack.features import FeatureSignature, match_signature, signature_from_points
+from tolstack.gdt import PatternFeature, PatternPositionControl
 
 
 class ProjectMixin:
@@ -20,6 +22,11 @@ class ProjectMixin:
 
     TOLERANCE_ID_ROLE = Qt.UserRole + 201
     STACK_TERM_ID_ROLE = Qt.UserRole + 202
+    PATTERN_FEATURE_ID_ROLE = Qt.UserRole + 211
+    PATTERN_MEMBER_ID_ROLE = Qt.UserRole + 212
+    PATTERN_SIZE_TOLERANCE_ID_ROLE = Qt.UserRole + 213
+    PATTERN_X_TOLERANCE_ID_ROLE = Qt.UserRole + 214
+    PATTERN_Y_TOLERANCE_ID_ROLE = Qt.UserRole + 215
 
     def _project_init_state(self):
         self.project = Project("Untitled")
@@ -27,6 +34,7 @@ class ProjectMixin:
         self._active_part_id = None
         self._active_occurrence_id = None
         self._active_datum_system_id = None
+        self._active_position_control_id = None
         self._entity_by_feature_id = {}
 
     def _project_install_menu(self):
@@ -48,8 +56,10 @@ class ProjectMixin:
         self._active_part_id = None
         self._active_occurrence_id = None
         self._active_datum_system_id = None
+        self._active_position_control_id = None
         self._entity_by_feature_id = {}
         self.table.setRowCount(0)
+        self.pattern_table.setRowCount(0)
         for slot in ("Primary", "Secondary", "Tertiary"):
             self._datum_slot[slot] = None
         self._current_drf = None
@@ -79,8 +89,15 @@ class ProjectMixin:
             None,
         )
         self._active_datum_system_id = next(iter(project.datum_systems), None)
+        self._active_position_control_id = next(iter(project.position_controls), None)
         self._entity_by_feature_id = {}
         self._project_restore_stack_to_ui()
+        self.pattern_table.setRowCount(0)
+        for slot in ("Primary", "Secondary", "Tertiary"):
+            self._datum_slot[slot] = None
+        self._current_drf = None
+        self._update_datum_labels()
+        self.drf_status_label.setText("Datum reference frame awaiting geometry.")
         self._project_update_title()
 
         part = project.parts.get(self._active_part_id)
@@ -113,6 +130,7 @@ class ProjectMixin:
         try:
             self._project_sync_stack_from_ui()
             self._project_sync_datums_from_ui()
+            self._project_sync_position_from_ui()
             self.project.save(path)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Could not save project", str(exc))
@@ -164,6 +182,7 @@ class ProjectMixin:
         self._project_reattach_features()
         self._project_restore_stack_links()
         self._project_restore_datums()
+        self._project_restore_position_control()
 
     def _project_register_feature(self, info: dict, label: str | None = None) -> str:
         current_id = info.get("feature_id")
@@ -321,18 +340,26 @@ class ProjectMixin:
         if any(entry is None or not entry.get("feature_id") for entry in entries):
             return
 
-        old_system = self.project.datum_systems.pop(self._active_datum_system_id, None)
-        if old_system:
-            for datum_id in old_system.datum_reference_ids:
-                self.project.datum_references.pop(datum_id, None)
-
+        system = self.project.datum_systems.get(self._active_datum_system_id)
+        old_ids = list(system.datum_reference_ids) if system else []
         references = []
-        for label, entry in zip(("A", "B", "C"), entries):
-            reference = DatumReference(entry["feature_id"], label)
+        for index, (label, entry) in enumerate(zip(("A", "B", "C"), entries)):
+            reference_id = entry.get("datum_ref_id")
+            if reference_id not in self.project.datum_references:
+                reference_id = old_ids[index] if index < len(old_ids) else new_id()
+            reference = DatumReference(entry["feature_id"], label, id=reference_id)
             self.project.datum_references[reference.id] = reference
             references.append(reference)
             entry["datum_ref_id"] = reference.id
-        system = DatumSystem("Primary datum reference frame", [item.id for item in references])
+        for stale_id in set(old_ids) - {item.id for item in references}:
+            self.project.datum_references.pop(stale_id, None)
+        if system is None:
+            system = DatumSystem(
+                "Primary datum reference frame", [item.id for item in references]
+            )
+        else:
+            system.name = "Primary datum reference frame"
+            system.datum_reference_ids = [item.id for item in references]
         self.project.datum_systems[system.id] = system
         self._active_datum_system_id = system.id
 
@@ -358,3 +385,214 @@ class ProjectMixin:
         self._update_datum_labels()
         if all(self._datum_slot[slot] is not None for slot in slots):
             self.build_datum_frame()
+
+    # ------------------------------------------------------------------
+    # Position-control persistence and analysis adapter
+    # ------------------------------------------------------------------
+
+    def _project_sync_position_from_ui(self):
+        if self.pattern_table.rowCount() == 0:
+            control = self.project.position_controls.pop(
+                self._active_position_control_id, None
+            )
+            if control:
+                referenced = {
+                    term.tolerance_id
+                    for stack in self.project.stacks.values()
+                    for term in stack.terms
+                }
+                for member in control.members:
+                    for tolerance_id in (
+                        member.size_tolerance_id,
+                        member.position_x_tolerance_id,
+                        member.position_y_tolerance_id,
+                    ):
+                        if tolerance_id not in referenced:
+                            self.project.tolerances.pop(tolerance_id, None)
+            self._active_position_control_id = None
+            return
+        if self._active_datum_system_id not in self.project.datum_systems:
+            raise ValueError("Build a complete datum reference frame before saving the pattern.")
+
+        control = self.project.position_controls.get(self._active_position_control_id)
+        if control is None:
+            control = PositionControlDefinition(
+                "Position control", self._active_datum_system_id, 0.0
+            )
+            self.project.position_controls[control.id] = control
+            self._active_position_control_id = control.id
+
+        previous_tolerance_ids = {
+            tolerance_id
+            for member in control.members
+            for tolerance_id in (
+                member.size_tolerance_id,
+                member.position_x_tolerance_id,
+                member.position_y_tolerance_id,
+            )
+        }
+        members = []
+        for row in range(self.pattern_table.rowCount()):
+            def cell(column):
+                item = self.pattern_table.item(row, column)
+                return item.text().strip() if item else ""
+
+            name_item = self.pattern_table.item(row, 0)
+            feature_id = name_item.data(self.PATTERN_FEATURE_ID_ROLE) if name_item else None
+            if feature_id not in self.project.features:
+                raise ValueError(f"Pattern row {row + 1} is not linked to a persistent feature.")
+
+            member_id = name_item.data(self.PATTERN_MEMBER_ID_ROLE) or new_id()
+            size_id = name_item.data(self.PATTERN_SIZE_TOLERANCE_ID_ROLE) or new_id()
+            x_id = name_item.data(self.PATTERN_X_TOLERANCE_ID_ROLE) or new_id()
+            y_id = name_item.data(self.PATTERN_Y_TOLERANCE_ID_ROLE) or new_id()
+            size_tol = float(cell(8) or 0.0)
+            x_tol = float(cell(6) or 0.0)
+            y_tol = float(cell(7) or 0.0)
+            common = {"feature_id": feature_id, "distribution": Distribution("uniform")}
+            self.project.tolerances[size_id] = ToleranceDefinition(
+                f"{cell(0)} size", "size", float(cell(5)), size_tol, size_tol,
+                id=size_id, **common,
+            )
+            self.project.tolerances[x_id] = ToleranceDefinition(
+                f"{cell(0)} X position", "position", 0.0, x_tol, x_tol,
+                id=x_id, **common,
+            )
+            self.project.tolerances[y_id] = ToleranceDefinition(
+                f"{cell(0)} Y position", "position", 0.0, y_tol, y_tol,
+                id=y_id, **common,
+            )
+            member = PositionPatternMember(
+                cell(0), feature_id, float(cell(1)), float(cell(2)),
+                size_id, x_id, y_id, id=member_id,
+            )
+            members.append(member)
+            name_item.setData(self.PATTERN_MEMBER_ID_ROLE, member_id)
+            name_item.setData(self.PATTERN_SIZE_TOLERANCE_ID_ROLE, size_id)
+            name_item.setData(self.PATTERN_X_TOLERANCE_ID_ROLE, x_id)
+            name_item.setData(self.PATTERN_Y_TOLERANCE_ID_ROLE, y_id)
+
+        try:
+            base_tolerance = float(self.gdt_base_tolerance_input.text() or 0.0)
+            mmc_size = float(self.gdt_mmc_size_input.text() or 0.0)
+            lmc_size = float(self.gdt_lmc_size_input.text() or 0.0)
+        except ValueError as exc:
+            raise ValueError("Position tolerance, MMC size, and LMC size must be numbers.") from exc
+        control.datum_system_id = self._active_datum_system_id
+        control.base_tolerance_diameter = base_tolerance
+        control.modifier = self.gdt_modifier_combo.currentText()
+        control.mmc_size = mmc_size
+        control.lmc_size = lmc_size
+        control.feature_kind = self.gdt_feature_kind_combo.currentText()
+        control.members = members
+        control.__post_init__()
+
+        live_ids = {
+            tolerance_id
+            for value in self.project.position_controls.values()
+            for member in value.members
+            for tolerance_id in (
+                member.size_tolerance_id,
+                member.position_x_tolerance_id,
+                member.position_y_tolerance_id,
+            )
+        }
+        live_ids.update(
+            term.tolerance_id for stack in self.project.stacks.values() for term in stack.terms
+        )
+        for tolerance_id in previous_tolerance_ids - live_ids:
+            self.project.tolerances.pop(tolerance_id, None)
+
+    def _project_restore_position_control(self):
+        self.pattern_table.setRowCount(0)
+        control = self.project.position_controls.get(self._active_position_control_id)
+        if control is None:
+            return
+        self.gdt_base_tolerance_input.setText(str(control.base_tolerance_diameter))
+        self.gdt_modifier_combo.setCurrentText(control.modifier)
+        self.gdt_mmc_size_input.setText(str(control.mmc_size))
+        self.gdt_lmc_size_input.setText(str(control.lmc_size))
+        self.gdt_feature_kind_combo.setCurrentText(control.feature_kind)
+        if self._current_drf is None:
+            return
+
+        for member in control.members:
+            info = self._entity_by_feature_id.get(member.feature_id)
+            if info is None:
+                continue
+            self._measure_ensure_circle_fit(info)
+            circle = info.get("circle")
+            if circle is None:
+                continue
+            actual_x, actual_y = self._current_drf.to_local_xy(circle["center"])
+            size = self.project.tolerances[member.size_tolerance_id]
+            x_variation = self.project.tolerances[member.position_x_tolerance_id]
+            y_variation = self.project.tolerances[member.position_y_tolerance_id]
+            row = self.pattern_table.rowCount()
+            self._pattern_add_row(
+                member.name, member.basic_x, member.basic_y, actual_x, actual_y,
+                size.nominal, feature_id=member.feature_id,
+            )
+            self.pattern_table.item(row, 6).setText(str(x_variation.tolerance_plus))
+            self.pattern_table.item(row, 7).setText(str(y_variation.tolerance_plus))
+            self.pattern_table.item(row, 8).setText(str(size.tolerance_plus))
+            name_item = self.pattern_table.item(row, 0)
+            name_item.setData(self.PATTERN_MEMBER_ID_ROLE, member.id)
+            name_item.setData(self.PATTERN_SIZE_TOLERANCE_ID_ROLE, size.id)
+            name_item.setData(self.PATTERN_X_TOLERANCE_ID_ROLE, x_variation.id)
+            name_item.setData(self.PATTERN_Y_TOLERANCE_ID_ROLE, y_variation.id)
+
+    @staticmethod
+    def _cpk_from_distribution(distribution: Distribution) -> float | None:
+        if distribution.kind != "normal":
+            return None
+        value = distribution.parameters.get("cpk")
+        return float(value) if value is not None else None
+
+    def _project_build_pattern_control(self) -> PatternPositionControl:
+        self._project_sync_datums_from_ui()
+        self._project_sync_position_from_ui()
+        control = self.project.position_controls.get(self._active_position_control_id)
+        if control is None or not control.members:
+            raise ValueError("No persistent position-control pattern is defined.")
+        if self._current_drf is None:
+            raise ValueError("Build the datum reference frame before evaluation.")
+
+        features = []
+        for member in control.members:
+            info = self._entity_by_feature_id.get(member.feature_id)
+            if info is None:
+                raise ValueError(f"Feature '{member.name}' is not attached to loaded geometry.")
+            self._measure_ensure_circle_fit(info)
+            circle = info.get("circle")
+            if circle is None:
+                raise ValueError(f"Feature '{member.name}' is no longer circular.")
+            actual_x, actual_y = self._current_drf.to_local_xy(circle["center"])
+            size = self.project.tolerances[member.size_tolerance_id]
+            x_variation = self.project.tolerances[member.position_x_tolerance_id]
+            y_variation = self.project.tolerances[member.position_y_tolerance_id]
+            features.append(PatternFeature(
+                name=member.name,
+                basic_x=member.basic_x, basic_y=member.basic_y,
+                actual_x=actual_x, actual_y=actual_y,
+                size_nominal=size.nominal,
+                size_tol_plus=size.tolerance_plus,
+                size_tol_minus=size.tolerance_minus,
+                size_cpk=self._cpk_from_distribution(size.distribution),
+                position_tol_plus_x=x_variation.tolerance_plus,
+                position_tol_minus_x=x_variation.tolerance_minus,
+                position_tol_plus_y=y_variation.tolerance_plus,
+                position_tol_minus_y=y_variation.tolerance_minus,
+                position_cpk=(
+                    self._cpk_from_distribution(x_variation.distribution)
+                    or self._cpk_from_distribution(y_variation.distribution)
+                ),
+            ))
+        return PatternPositionControl(
+            features=features,
+            base_tolerance_diameter=control.base_tolerance_diameter,
+            modifier=control.modifier,
+            mmc_size=control.mmc_size,
+            lmc_size=control.lmc_size,
+            feature_kind=control.feature_kind,
+        )

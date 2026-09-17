@@ -6,10 +6,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Code"))
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QApplication, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
+)
 
 from gui.project_mixin import ProjectMixin
-from tolstack import FeatureDefinition, PartDefinition, PartOccurrence, Project
+from tolstack import (
+    DatumReference, DatumSystem, FeatureDefinition, PartDefinition,
+    PartOccurrence, Project,
+)
 
 
 class ProjectBridgeHarness(ProjectMixin):
@@ -21,9 +26,20 @@ class ProjectBridgeHarness(ProjectMixin):
         self._active_part_id = None
         self._active_occurrence_id = None
         self._active_datum_system_id = None
+        self._active_position_control_id = None
         self._entity_by_feature_id = {}
         self._step_entity_info = {}
         self.table = QTableWidget(0, 7)
+        self.pattern_table = QTableWidget(0, 10)
+        self.gdt_base_tolerance_input = QLineEdit("0.2")
+        self.gdt_mmc_size_input = QLineEdit("10.0")
+        self.gdt_lmc_size_input = QLineEdit("10.2")
+        self.gdt_modifier_combo = QComboBox()
+        self.gdt_modifier_combo.addItems(["RFS", "MMC", "LMC"])
+        self.gdt_modifier_combo.setCurrentText("MMC")
+        self.gdt_feature_kind_combo = QComboBox()
+        self.gdt_feature_kind_combo.addItems(["hole", "pin"])
+        self._current_drf = None
 
     def _get_sign_from_row(self, row):
         return self.table.item(row, 4).text()
@@ -40,6 +56,21 @@ class ProjectBridgeHarness(ProjectMixin):
 
     def _measure_ensure_circle_fit(self, info):
         return None
+
+    def _project_sync_datums_from_ui(self):
+        return None
+
+    def _pattern_add_row(
+        self, name, basic_x, basic_y, actual_x, actual_y, diameter,
+        feature_id=None,
+    ):
+        row = self.pattern_table.rowCount()
+        self.pattern_table.insertRow(row)
+        values = (name, basic_x, basic_y, actual_x, actual_y, diameter, 0.0, 0.0, 0.0, "-")
+        for column, value in enumerate(values):
+            self.pattern_table.setItem(row, column, QTableWidgetItem(str(value)))
+        if feature_id:
+            self.pattern_table.item(row, 0).setData(self.PATTERN_FEATURE_ID_ROLE, feature_id)
 
 
 def _app():
@@ -141,3 +172,45 @@ def test_plane_and_circle_candidates_are_matched_by_saved_signature_kind():
 
     assert harness._project_find_entity_info(plane_id) is reloaded_plane
     assert harness._project_find_entity_info(circle_id) is reloaded_circle
+
+
+class _Frame:
+    def to_local_xy(self, point):
+        return float(point[0]), float(point[1])
+
+
+def test_position_pattern_round_trip_and_analysis_adapter_use_project_model():
+    _app()
+    source = ProjectBridgeHarness()
+    feature = _add_part_and_feature(source)
+    datum = source.project.add_datum_reference(DatumReference(feature.id, "A", id="datum-1"))
+    system = source.project.add_datum_system(DatumSystem("DRF", [datum.id], id="drf-1"))
+    source._active_datum_system_id = system.id
+    source._pattern_add_row("Hole 1", 2.0, 3.0, 2.01, 2.98, 10.1, feature.id)
+    source.pattern_table.item(0, 6).setText("0.05")
+    source.pattern_table.item(0, 7).setText("0.06")
+    source.pattern_table.item(0, 8).setText("0.1")
+    source._project_sync_position_from_ui()
+
+    restored = ProjectBridgeHarness()
+    restored.project = Project.from_dict(source.project.to_dict())
+    restored._active_datum_system_id = "drf-1"
+    restored._active_position_control_id = next(iter(restored.project.position_controls))
+    restored._current_drf = _Frame()
+    restored._entity_by_feature_id[feature.id] = {
+        "type": "edge", "index": 44,
+        "points": np.array([[12, 20, 0]], dtype=float),
+        "circle": {
+            "center": np.array([2.01, 2.98, 0.0]),
+            "normal": np.array([0.0, 0.0, 1.0]),
+            "radius": 5.05,
+        },
+    }
+    restored._project_restore_position_control()
+    engine_control = restored._project_build_pattern_control()
+
+    assert restored.pattern_table.item(0, 0).data(restored.PATTERN_FEATURE_ID_ROLE) == feature.id
+    assert engine_control.modifier == "MMC"
+    assert engine_control.features[0].basic_x == 2.0
+    assert engine_control.features[0].actual_y == 2.98
+    assert engine_control.features[0].position_tol_plus_y == 0.06

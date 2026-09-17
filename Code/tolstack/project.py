@@ -12,6 +12,7 @@ from .domain import (
     FeatureDefinition, PartDefinition, PartOccurrence, ResponseDefinition,
     RigidTransform, ToleranceDefinition, Units, new_id,
     LinearStackDefinition, StackTerm,
+    PositionControlDefinition, PositionPatternMember,
 )
 
 
@@ -34,6 +35,7 @@ class Project:
     stacks: dict[str, LinearStackDefinition] = field(default_factory=dict)
     datum_references: dict[str, DatumReference] = field(default_factory=dict)
     datum_systems: dict[str, DatumSystem] = field(default_factory=dict)
+    position_controls: dict[str, PositionControlDefinition] = field(default_factory=dict)
     constraints: dict[str, AssemblyConstraint] = field(default_factory=dict)
     responses: dict[str, ResponseDefinition] = field(default_factory=dict)
 
@@ -98,6 +100,33 @@ class Project:
             raise ValueError(f"Unknown datum references: {sorted(missing)}.")
         return self._add(self.datum_systems, entity)
 
+    def add_position_control(
+        self, entity: PositionControlDefinition
+    ) -> PositionControlDefinition:
+        self._validate_position_control(entity)
+        return self._add(self.position_controls, entity)
+
+    def _validate_position_control(self, control: PositionControlDefinition) -> None:
+        if control.datum_system_id not in self.datum_systems:
+            raise ValueError(
+                f"Position control '{control.id}' references an unknown datum system."
+            )
+        for member in control.members:
+            if member.feature_id not in self.features:
+                raise ValueError(
+                    f"Position member '{member.id}' references an unknown feature."
+                )
+            for tolerance_id in (
+                member.size_tolerance_id,
+                member.position_x_tolerance_id,
+                member.position_y_tolerance_id,
+            ):
+                if tolerance_id not in self.tolerances:
+                    raise ValueError(
+                        f"Position member '{member.id}' references unknown tolerance "
+                        f"'{tolerance_id}'."
+                    )
+
     def add_constraint(self, entity: AssemblyConstraint) -> AssemblyConstraint:
         self._validate_occurrence_feature_pair(entity.occurrence_a_id, entity.feature_a_id)
         self._validate_occurrence_feature_pair(entity.occurrence_b_id, entity.feature_b_id)
@@ -141,6 +170,8 @@ class Project:
             missing = set(datum_system.datum_reference_ids) - self.datum_references.keys()
             if missing:
                 raise ValueError(f"Datum system '{datum_system.id}' has unknown references.")
+        for control in self.position_controls.values():
+            self._validate_position_control(control)
         for constraint in self.constraints.values():
             self._validate_occurrence_feature_pair(constraint.occurrence_a_id, constraint.feature_a_id)
             self._validate_occurrence_feature_pair(constraint.occurrence_b_id, constraint.feature_b_id)
@@ -162,6 +193,7 @@ class Project:
             "stacks": _collection_to_list(self.stacks),
             "datum_references": _collection_to_list(self.datum_references),
             "datum_systems": _collection_to_list(self.datum_systems),
+            "position_controls": _collection_to_list(self.position_controls),
             "constraints": _collection_to_list(self.constraints),
             "responses": _collection_to_list(self.responses),
         }
@@ -199,6 +231,16 @@ class Project:
             ),
             datum_references=_load_collection(data.get("datum_references", []), DatumReference),
             datum_systems=_load_collection(data.get("datum_systems", []), DatumSystem),
+            position_controls=_load_collection(
+                data.get("position_controls", []), PositionControlDefinition,
+                transform=lambda item: {
+                    **item,
+                    "members": [
+                        PositionPatternMember(**member)
+                        for member in item.get("members", [])
+                    ],
+                },
+            ),
             constraints=_load_collection(data.get("constraints", []), AssemblyConstraint),
             responses=_load_collection(data.get("responses", []), ResponseDefinition),
         )
