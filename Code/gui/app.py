@@ -602,6 +602,7 @@ class TolstackWindow(
         for key, caption in [
             ("nominal", "As-modeled:"), ("pattern_fail_rate", "Pattern fail rate:"),
             ("per_feature", "Per-feature fail rate:"),
+            ("virtual_condition", "Virtual condition:"),
         ]:
             row = QHBoxLayout()
             caption_label = QLabel(caption)

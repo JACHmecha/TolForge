@@ -20,6 +20,10 @@ from .domain import (
     PositionControlDefinition, PositionPatternMember,
 )
 from .project import CURRENT_SCHEMA_VERSION, Project
+from .gdt import (
+    PinHoleClearanceEvaluation, actual_mating_boundary,
+    evaluate_pin_hole_clearance, size_limits, size_margin, virtual_condition,
+)
 
 __all__ = [
     "Stack",
@@ -46,4 +50,10 @@ __all__ = [
     "Units",
     "CURRENT_SCHEMA_VERSION",
     "Project",
+    "PinHoleClearanceEvaluation",
+    "actual_mating_boundary",
+    "evaluate_pin_hole_clearance",
+    "size_limits",
+    "size_margin",
+    "virtual_condition",
 ]

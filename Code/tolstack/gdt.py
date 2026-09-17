@@ -126,6 +126,60 @@ Modifier = Literal["RFS", "MMC", "LMC"]
 FeatureKind = Literal["hole", "pin"]
 
 
+def size_limits(mmc_size: float, lmc_size: float, feature_kind: FeatureKind) -> tuple[float, float]:
+    """Return conventional (lower, upper) size limits and validate MMC/LMC order."""
+    mmc_size, lmc_size = float(mmc_size), float(lmc_size)
+    if feature_kind == "hole":
+        if mmc_size > lmc_size:
+            raise ValueError("For a hole, MMC must be less than or equal to LMC.")
+        return mmc_size, lmc_size
+    if feature_kind == "pin":
+        if lmc_size > mmc_size:
+            raise ValueError("For a pin, LMC must be less than or equal to MMC.")
+        return lmc_size, mmc_size
+    raise ValueError(f"Unknown feature kind '{feature_kind}'.")
+
+
+def size_margin(
+    actual_size: float, mmc_size: float, lmc_size: float, feature_kind: FeatureKind,
+) -> float:
+    """Signed distance to the nearest size limit; negative means out of size."""
+    lower, upper = size_limits(mmc_size, lmc_size, feature_kind)
+    return min(float(actual_size) - lower, upper - float(actual_size))
+
+
+def virtual_condition(
+    mmc_size: float, geometric_tolerance_diameter: float, feature_kind: FeatureKind,
+) -> float:
+    """Worst-case mating boundary for a feature controlled at MMC.
+
+    An internal feature loses usable diameter to geometric error; an external
+    feature gains an equivalent outer boundary.
+    """
+    mmc_size = float(mmc_size)
+    tolerance = float(geometric_tolerance_diameter)
+    if tolerance < 0:
+        raise ValueError("Geometric tolerance cannot be negative.")
+    if feature_kind == "hole":
+        return mmc_size - tolerance
+    if feature_kind == "pin":
+        return mmc_size + tolerance
+    raise ValueError(f"Unknown feature kind '{feature_kind}'.")
+
+
+def actual_mating_boundary(
+    actual_size: float, diametral_geometric_error: float, feature_kind: FeatureKind,
+) -> float:
+    """Effective mating boundary of one manufactured feature."""
+    if diametral_geometric_error < 0:
+        raise ValueError("Geometric error cannot be negative.")
+    if feature_kind == "hole":
+        return float(actual_size) - float(diametral_geometric_error)
+    if feature_kind == "pin":
+        return float(actual_size) + float(diametral_geometric_error)
+    raise ValueError(f"Unknown feature kind '{feature_kind}'.")
+
+
 def bonus_tolerance(
     actual_size: float, mmc_size: float, lmc_size: float,
     modifier: Modifier, feature_kind: FeatureKind = "hole",
@@ -169,8 +223,14 @@ class PositionEvaluation:
     position_error: float
     bonus_tolerance: float
     allowed_tolerance: float
-    margin: float  # positive = pass, negative = fail, magnitude = how much room
+    margin: float  # worst of size and position margins
     passes: bool
+    position_margin: float
+    size_margin: float
+    position_conforming: bool
+    size_conforming: bool
+    virtual_condition: float | None
+    actual_mating_boundary: float
 
 
 def evaluate_position(
@@ -179,11 +239,72 @@ def evaluate_position(
     modifier: Modifier = "RFS", feature_kind: FeatureKind = "hole",
 ) -> PositionEvaluation:
     error = position_error(dx, dy)
-    bonus = bonus_tolerance(actual_size, mmc_size, lmc_size, modifier, feature_kind)
+    lower_size, upper_size = size_limits(mmc_size, lmc_size, feature_kind)
+    bounded_size = float(np.clip(actual_size, lower_size, upper_size))
+    bonus = bonus_tolerance(bounded_size, mmc_size, lmc_size, modifier, feature_kind)
     allowed = base_tolerance_diameter + bonus
+    position_margin_value = allowed - error
+    size_margin_value = size_margin(actual_size, mmc_size, lmc_size, feature_kind)
+    position_conforming = position_margin_value >= 0
+    size_conforming = size_margin_value >= 0
     return PositionEvaluation(
         position_error=error, bonus_tolerance=bonus, allowed_tolerance=allowed,
-        margin=allowed - error, passes=error <= allowed,
+        margin=min(position_margin_value, size_margin_value),
+        passes=position_conforming and size_conforming,
+        position_margin=position_margin_value,
+        size_margin=size_margin_value,
+        position_conforming=position_conforming,
+        size_conforming=size_conforming,
+        virtual_condition=(
+            virtual_condition(mmc_size, base_tolerance_diameter, feature_kind)
+            if modifier == "MMC" else None
+        ),
+        actual_mating_boundary=actual_mating_boundary(actual_size, error, feature_kind),
+    )
+
+
+@dataclass
+class PinHoleClearanceEvaluation:
+    hole_virtual_condition: float
+    pin_virtual_condition: float
+    guaranteed_clearance: float
+    guaranteed_assembly: bool
+    actual_effective_clearance: float | None = None
+
+
+def evaluate_pin_hole_clearance(
+    hole_mmc_size: float,
+    hole_position_tolerance: float,
+    pin_mmc_size: float,
+    pin_position_tolerance: float,
+    *,
+    hole_actual_size: float | None = None,
+    hole_position_error: float = 0.0,
+    pin_actual_size: float | None = None,
+    pin_position_error: float = 0.0,
+) -> PinHoleClearanceEvaluation:
+    """Evaluate diametral clearance between one hole and one pin at MMC.
+
+    ``guaranteed_clearance`` compares the two virtual-condition boundaries.
+    Optional actual sizes/errors additionally report the effective clearance
+    for one manufactured pair.
+    """
+    hole_boundary = virtual_condition(hole_mmc_size, hole_position_tolerance, "hole")
+    pin_boundary = virtual_condition(pin_mmc_size, pin_position_tolerance, "pin")
+    guaranteed_clearance = hole_boundary - pin_boundary
+    actual_clearance = None
+    if (hole_actual_size is None) != (pin_actual_size is None):
+        raise ValueError("Provide both actual sizes or neither.")
+    if hole_actual_size is not None:
+        actual_clearance = actual_mating_boundary(
+            hole_actual_size, hole_position_error, "hole"
+        ) - actual_mating_boundary(pin_actual_size, pin_position_error, "pin")
+    return PinHoleClearanceEvaluation(
+        hole_virtual_condition=hole_boundary,
+        pin_virtual_condition=pin_boundary,
+        guaranteed_clearance=guaranteed_clearance,
+        guaranteed_assembly=guaranteed_clearance >= 0,
+        actual_effective_clearance=actual_clearance,
     )
 
 
@@ -282,6 +403,8 @@ def evaluate_pattern_nominal(control: PatternPositionControl) -> list:
 @dataclass
 class PatternMonteCarloResult:
     per_feature_fail_rate: dict  # name -> fraction of samples that failed
+    per_feature_size_fail_rate: dict
+    per_feature_position_fail_rate: dict
     pattern_fail_rate: float  # fraction of samples where >=1 feature failed
     worst_feature_margin: np.ndarray  # per-sample minimum margin across the pattern
 
@@ -301,6 +424,12 @@ def run_pattern_monte_carlo(
     n = len(control.features)
     margins = np.empty((n, iterations))
     per_feature_fail_rate = {}
+    per_feature_size_fail_rate = {}
+    per_feature_position_fail_rate = {}
+
+    lower_size, upper_size = size_limits(
+        control.mmc_size, control.lmc_size, control.feature_kind
+    )
 
     for i, feature in enumerate(control.features):
         sizes = feature.sample_size(iterations, default_cpk)
@@ -309,23 +438,30 @@ def run_pattern_monte_carlo(
         dys = ys - feature.basic_y
 
         errors = 2.0 * np.hypot(dxs, dys)
+        bounded_sizes = np.clip(sizes, lower_size, upper_size)
         if control.modifier == "RFS":
             bonuses = np.zeros(iterations)
         else:
             bonuses = np.array([
                 bonus_tolerance(s, control.mmc_size, control.lmc_size, control.modifier, control.feature_kind)
-                for s in sizes
+                for s in bounded_sizes
             ])
         allowed = control.base_tolerance_diameter + bonuses
-        margin = allowed - errors
+        position_margins = allowed - errors
+        size_margins = np.minimum(sizes - lower_size, upper_size - sizes)
+        margin = np.minimum(position_margins, size_margins)
         margins[i] = margin
         per_feature_fail_rate[feature.name] = float(np.mean(margin < 0))
+        per_feature_size_fail_rate[feature.name] = float(np.mean(size_margins < 0))
+        per_feature_position_fail_rate[feature.name] = float(np.mean(position_margins < 0))
 
     worst_feature_margin = margins.min(axis=0)
     pattern_fail_rate = float(np.mean(worst_feature_margin < 0))
 
     return PatternMonteCarloResult(
         per_feature_fail_rate=per_feature_fail_rate,
+        per_feature_size_fail_rate=per_feature_size_fail_rate,
+        per_feature_position_fail_rate=per_feature_position_fail_rate,
         pattern_fail_rate=pattern_fail_rate,
         worst_feature_margin=worst_feature_margin,
     )

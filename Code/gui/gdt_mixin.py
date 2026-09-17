@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QMessageBox, QInputDialog, QTableWidgetItem
 from tolstack.gdt import (
     DatumFeature, build_datum_reference_frame,
     PatternFeature, PatternPositionControl,
-    evaluate_pattern_nominal, run_pattern_monte_carlo,
+    evaluate_pattern_nominal, run_pattern_monte_carlo, virtual_condition,
 )
 
 # Column layout for self.pattern_table - kept short since this table lives
@@ -298,10 +298,26 @@ class GdtMixin:
             QMessageBox.warning(self, "Invalid input", str(exc))
             return
 
-        results = evaluate_pattern_nominal(control)
+        try:
+            results = evaluate_pattern_nominal(control)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid GD&T definition", str(exc))
+            return
         for row, (name, evaluation) in enumerate(results):
-            status = "PASS" if evaluation.passes else "FAIL"
-            text = f"{status} margin {evaluation.margin:+.3f} (bonus {evaluation.bonus_tolerance:.3f})"
+            if evaluation.passes:
+                status = "PASS"
+            elif not evaluation.size_conforming and not evaluation.position_conforming:
+                status = "FAIL SIZE+POSITION"
+            elif not evaluation.size_conforming:
+                status = "FAIL SIZE"
+            else:
+                status = "FAIL POSITION"
+            text = (
+                f"{status} overall {evaluation.margin:+.3f}; "
+                f"size {evaluation.size_margin:+.3f}, "
+                f"position {evaluation.position_margin:+.3f} "
+                f"(bonus {evaluation.bonus_tolerance:.3f})"
+            )
             self.pattern_table.setItem(row, 9, QTableWidgetItem(text))
         self.pattern_table.resizeColumnsToContents()
 
@@ -309,6 +325,18 @@ class GdtMixin:
         self.gdt_result_labels["nominal"].setText(
             f"{len(results) - n_fail}/{len(results)} features pass (as-modeled/as-measured, no statistical variation)."
         )
+        if control.modifier == "MMC":
+            boundary = virtual_condition(
+                control.mmc_size, control.base_tolerance_diameter,
+                control.feature_kind,
+            )
+            self.gdt_result_labels["virtual_condition"].setText(
+                f"{control.feature_kind.title()} boundary: ⌀{boundary:.4f}"
+            )
+        else:
+            self.gdt_result_labels["virtual_condition"].setText(
+                "A fixed virtual-condition boundary requires an MMC modifier."
+            )
 
     def run_pattern_monte_carlo_analysis(self):
         if self.pattern_table.rowCount() == 0:
@@ -332,7 +360,12 @@ class GdtMixin:
 
         labels = self.gdt_result_labels
         labels["pattern_fail_rate"].setText(f"{mc.pattern_fail_rate * 100:.2f} % of samples have >=1 feature out of tolerance")
-        per_feature_text = ", ".join(f"{name}: {rate*100:.2f}%" for name, rate in mc.per_feature_fail_rate.items())
+        per_feature_text = ", ".join(
+            f"{name}: total {rate*100:.2f}% "
+            f"(size {mc.per_feature_size_fail_rate[name]*100:.2f}%, "
+            f"position {mc.per_feature_position_fail_rate[name]*100:.2f}%)"
+            for name, rate in mc.per_feature_fail_rate.items()
+        )
         labels["per_feature"].setText(per_feature_text)
 
         self.gdt_figure.clear()

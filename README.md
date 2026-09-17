@@ -51,6 +51,9 @@ definitions from assembly occurrences and stores features, tolerances, datum
 systems, constraints, and analysis responses by stable ID rather than GUI row
 names or transient STEP topology indices.
 
+GD&T size acceptance, MMC bonus, virtual-condition, and pin/hole clearance
+conventions are documented in [`docs/gdt-semantics.md`](docs/gdt-semantics.md).
+
 The GUI is split into focused files rather than one large module:
 `TolstackWindow` (in `app.py`) combines three mixins
 (`StepViewerMixin`, `DimensionBankMixin`, `AnalysisMixin`), each of which
