@@ -135,10 +135,12 @@ class StackLinkMixin:
         row = self._stack_link_arm_row
         self._stack_link_arm_row = None
 
-        link = {
-            "entity_type": info["type"], "entity_index": info["index"],
-            "solid_index": info.get("solid_index"), "mode": mode,
-        }
+        try:
+            feature_id = self._project_register_feature(info)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Could not register feature", str(exc))
+            return True
+        link = {"feature_id": feature_id, "mode": mode}
         self._stack_link_set_row_link(row, link)
         self.step_status_label.setText(
             f"Linked row {row + 1} ({self.table.item(row, 0).text() if self.table.item(row, 0) else '?'}) "
@@ -258,10 +260,14 @@ class StackLinkMixin:
         return entries
 
     @staticmethod
-    def _stack_link_feature_key(link: dict) -> tuple:
-        return (link.get("solid_index"), link["entity_type"], link["entity_index"])
+    def _stack_link_feature_key(link: dict):
+        if link.get("feature_id"):
+            return link["feature_id"]
+        return (link.get("solid_index"), link.get("entity_type"), link.get("entity_index"))
 
     def _stack_link_find_entity_info(self, link: dict) -> dict | None:
+        if link.get("feature_id") and hasattr(self, "_project_find_entity_info"):
+            return self._project_find_entity_info(link["feature_id"])
         target = self._stack_link_feature_key(link)
         for entry in self._step_entity_info.values():
             if entry["type"] != link["entity_type"] or entry["index"] != link["entity_index"]:

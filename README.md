@@ -30,6 +30,8 @@ Code/
     models.py                 Dimension, StackResult, MonteCarloResult, FitAssessment
     stack.py                  Stack class: worst_case(), rss(), monte_carlo()
     bank.py                   DimensionBank / DimensionTemplate (JSON persistence)
+    domain.py                 Parts, occurrences, features, tolerances, datums
+    project.py                Versioned project aggregate and JSON persistence
   gui/                        PySide6 desktop application
     app.py                    Window layout + main() entry point
     step_renderer.py          Embedded 3D viewport widget (rotate/pan/zoom/select)
@@ -42,6 +44,12 @@ tests/
   test_stack.py                Tests for the tolstack calculation package
   test_step_viewer.py          Tests for STEP backend detection
 ```
+
+The versioned engineering project model is documented in
+[`docs/engineering-domain.md`](docs/engineering-domain.md). It separates part
+definitions from assembly occurrences and stores features, tolerances, datum
+systems, constraints, and analysis responses by stable ID rather than GUI row
+names or transient STEP topology indices.
 
 The GUI is split into focused files rather than one large module:
 `TolstackWindow` (in `app.py`) combines three mixins

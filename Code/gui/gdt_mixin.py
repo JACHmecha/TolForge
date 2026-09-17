@@ -107,7 +107,15 @@ class GdtMixin:
             return True
 
         slot = self._datum_arm
-        self._datum_slot[slot] = {"point": point, "direction": direction, "description": description}
+        try:
+            feature_id = self._project_register_feature(info, label=f"Datum {slot}")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Could not register datum feature", str(exc))
+            return True
+        self._datum_slot[slot] = {
+            "point": point, "direction": direction, "description": description,
+            "feature_id": feature_id,
+        }
         self._datum_arm = None
         self._update_datum_labels()
         return True

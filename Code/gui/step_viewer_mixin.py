@@ -354,6 +354,9 @@ class StepViewerMixin:
             self._step_preview_renderer.update()
             QApplication.processEvents()
 
+            if hasattr(self, "_project_on_step_loaded"):
+                self._project_on_step_loaded(path)
+
             lod_note = "" if worker.deflection_applied else " (quality setting not supported by this compas_occ version - used its default)"
             solid_count = len(set(result.face_solid_indices)) if result.face_solid_indices else 0
             self.step_status_label.setText(

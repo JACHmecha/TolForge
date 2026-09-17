@@ -84,13 +84,14 @@ from gui.measurement_mixin import MeasurementMixin
 from gui.eclipse_mixin import EclipseMixin
 from gui.gdt_mixin import GdtMixin, PATTERN_COLUMNS
 from gui.stack_link_mixin import StackLinkMixin
+from gui.project_mixin import ProjectMixin
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "+/-", "Cpk"]
 
 
 class TolstackWindow(
     QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin,
-    MeasurementMixin, EclipseMixin, GdtMixin, StackLinkMixin,
+    MeasurementMixin, EclipseMixin, GdtMixin, StackLinkMixin, ProjectMixin,
 ):
     def __init__(self):
         super().__init__()
@@ -114,6 +115,7 @@ class TolstackWindow(
         self._step_load_generation = 0
         self._pick_filter = "any"
         self._pick_markers = []
+        self._project_init_state()
         self._measure_init_state()
         self._gdt_init_state()
         self._stack_link_init_state()
@@ -755,6 +757,8 @@ class TolstackWindow(
         # Seed example row + bank so the GUI doesn't start empty
         self._seed_example()
         self._seed_bank()
+        self._project_install_menu()
+        self._project_update_title()
 
     def closeEvent(self, event):
         # Without this, closing the window while a large-assembly STEP

@@ -13,6 +13,13 @@ from .models import (
 )
 from .bank import DimensionBank, DimensionTemplate
 
+from .domain import (
+    AssemblyConstraint, DatumReference, DatumSystem, Distribution,
+    FeatureDefinition, PartDefinition, PartOccurrence, ResponseDefinition,
+    RigidTransform, ToleranceDefinition, Units, LinearStackDefinition, StackTerm,
+)
+from .project import CURRENT_SCHEMA_VERSION, Project
+
 __all__ = [
     "Stack",
     "Dimension",
@@ -21,4 +28,19 @@ __all__ = [
     "FitAssessment",
     "DimensionBank",
     "DimensionTemplate",
+    "AssemblyConstraint",
+    "DatumReference",
+    "DatumSystem",
+    "Distribution",
+    "FeatureDefinition",
+    "PartDefinition",
+    "PartOccurrence",
+    "ResponseDefinition",
+    "RigidTransform",
+    "ToleranceDefinition",
+    "LinearStackDefinition",
+    "StackTerm",
+    "Units",
+    "CURRENT_SCHEMA_VERSION",
+    "Project",
 ]
