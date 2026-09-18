@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Code"))
 
 from PySide6.QtWidgets import QApplication
@@ -49,5 +51,42 @@ def test_measure_context_menu_exposes_slot_and_bank_actions():
     assert "Set as Measure A" in texts
     assert "Set as Measure B" in texts
     assert "Add measurement to Dimension Bank" in texts
+    assert "Inspect properties" in texts
+    assert "Set as datum" in texts
+    assert "Link selected stack term" in texts
+
+    app.quit()
+
+
+def test_context_menu_exposes_size_actions_only_for_circular_edges():
+    app = QApplication.instance() or QApplication([])
+
+    class DummyWindow(MeasurementMixin):
+        def __init__(self):
+            self._measure_slot = {"A": None, "B": None}
+            self._measure_last = None
+
+    angles = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+    circular_edge = {
+        "type": "edge",
+        "index": 1,
+        "points": np.column_stack([2.0 * np.cos(angles), 2.0 * np.sin(angles), angles * 0.0]),
+    }
+    planar_face = {
+        "type": "face",
+        "index": 2,
+        "points": circular_edge["points"],
+    }
+
+    window = DummyWindow()
+    edge_menu = window._build_measure_context_menu(circular_edge)
+    face_menu = window._build_measure_context_menu(planar_face)
+    edge_texts = [action.text() for action in edge_menu.actions()]
+    face_texts = [action.text() for action in face_menu.actions()]
+
+    assert "Add size tolerance…" in edge_texts
+    assert "Add to position pattern…" in edge_texts
+    assert "Add size tolerance…" not in face_texts
+    assert "Add to position pattern…" not in face_texts
 
     app.quit()

@@ -129,7 +129,7 @@ class StepViewerMixin:
         placeholder = QLabel(message or "Use the button above to preview a STEP file.")
         placeholder.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
         placeholder.setWordWrap(True)
-        placeholder.setStyleSheet("color: #666666;")
+        placeholder.setProperty("role", "muted")
         self.step_preview_layout.addWidget(placeholder)
 
     def _clear_step_preview_widget(self):
@@ -480,6 +480,9 @@ class StepViewerMixin:
             return
 
         info = self._step_entity_info.get(id(obj)) if obj is not None else None
+        self._selected_entity_info = info
+        if hasattr(self, "_update_selection_inspector"):
+            self._update_selection_inspector(info)
         if info is None:
             self.step_status_label.setText("Selection cleared.")
             return

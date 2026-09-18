@@ -5,6 +5,7 @@ the interactive histogram (draggable interval lines) for TolstackWindow.
 from PySide6.QtWidgets import QMessageBox
 
 from tolstack import Stack, Dimension
+from gui.theme import COLORS, style_axes
 
 
 class AnalysisMixin:
@@ -255,14 +256,15 @@ class AnalysisMixin:
     def _plot_histogram(self, samples):
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.hist(samples, bins=50)
+        ax.hist(samples, bins=50, color=COLORS["accent"], edgecolor=COLORS["panel"])
         ax.set_title("Monte Carlo distribution")
         ax.set_xlabel("Value")
         ax.set_ylabel("Frequency")
         self._histogram_ax = ax
         self._interval_lines = [
-            ax.axvline(self.interval_min_value, color="#1f77b4", linestyle="--", linewidth=1.8),
-            ax.axvline(self.interval_max_value, color="#ff7f0e", linestyle="--", linewidth=1.8),
+            ax.axvline(self.interval_min_value, color=COLORS["accent"], linestyle="--", linewidth=1.8),
+            ax.axvline(self.interval_max_value, color=COLORS["selection"], linestyle="--", linewidth=1.8),
         ]
+        style_axes(ax)
         self.figure.tight_layout()
         self.canvas.draw()

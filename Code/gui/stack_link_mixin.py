@@ -111,14 +111,21 @@ class StackLinkMixin:
             return True
 
         mode = self._stack_link_pending_mode
+        row = self._stack_link_arm_row
+        self._stack_link_arm_row = None
+        self._stack_link_pending_mode = None
+        self._stack_link_row_to_info(row, mode, info)
+        return True
+
+    def _stack_link_row_to_info(self, row: int, mode: str, info: dict) -> bool:
+        """Complete a stack-feature link from a direct/contextual selection."""
         if info["type"] not in ("face", "edge"):
             QMessageBox.warning(
                 self, "Can't link this",
                 "Only faces and edges can be linked to a dimension - a vertex has no "
                 "surface/curve to offset."
             )
-            self._stack_link_arm_row = None
-            return True
+            return False
 
         if mode in ("diametral", "positional"):
             self._measure_ensure_circle_fit(info)
@@ -129,11 +136,7 @@ class StackLinkMixin:
                     "this entity wasn't recognized as circular. Try 'normal_offset' instead, or "
                     "pick a hole's edge."
                 )
-                self._stack_link_arm_row = None
-                return True
-
-        row = self._stack_link_arm_row
-        self._stack_link_arm_row = None
+                return False
 
         try:
             feature_id = self._project_register_feature(info)
@@ -141,6 +144,8 @@ class StackLinkMixin:
             QMessageBox.warning(self, "Could not register feature", str(exc))
             return True
         link = {"feature_id": feature_id, "mode": mode}
+        if hasattr(self, "_update_selection_inspector"):
+            self._update_selection_inspector(info)
         self._stack_link_set_row_link(row, link)
         self.step_status_label.setText(
             f"Linked row {row + 1} ({self.table.item(row, 0).text() if self.table.item(row, 0) else '?'}) "
@@ -148,6 +153,35 @@ class StackLinkMixin:
         )
         self._stack_link_rebuild_preview()
         return True
+
+    def context_link_selected_row(self, info: dict, mode: str):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "No stack term selected", "Select a row in the Stack workspace first.")
+            if hasattr(self, "_show_workspace"):
+                self._show_workspace("stack")
+            return
+        if self._stack_link_row_to_info(row, mode, info) and hasattr(self, "_show_workspace"):
+            self._show_workspace("stack")
+
+    def context_add_size_tolerance(self, info: dict):
+        self._measure_ensure_circle_fit(info)
+        circle = info.get("circle")
+        if circle is None:
+            QMessageBox.warning(self, "Not circular", "A size tolerance requires circular geometry.")
+            return
+        name, ok = QInputDialog.getText(
+            self, "Add size tolerance", "Dimension name:",
+            text=f"Diameter {self.table.rowCount() + 1}",
+        )
+        if not ok or not name.strip():
+            return
+        row = self.table.rowCount()
+        self._add_table_row(name.strip(), circle["radius"] * 2, 0.0, 0.0, "+", None)
+        self._stack_link_row_to_info(row, "diametral", info)
+        self.table.setCurrentCell(row, 0)
+        if hasattr(self, "_show_workspace"):
+            self._show_workspace("stack")
 
     def _stack_link_set_row_link(self, row: int, link: dict | None):
         """Stores link data on the row's Name cell (travels naturally

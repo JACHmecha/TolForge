@@ -67,7 +67,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QPushButton, QLabel, QComboBox,
     QHeaderView, QLineEdit,
     QCheckBox, QDoubleSpinBox, QSpinBox,
-    QTabWidget, QFrame, QSizePolicy, QScrollArea
+    QTabWidget, QFrame, QSizePolicy, QScrollArea, QButtonGroup
 )
 from PySide6.QtCore import Qt
 
@@ -85,6 +85,7 @@ from gui.eclipse_mixin import EclipseMixin
 from gui.gdt_mixin import GdtMixin, PATTERN_COLUMNS
 from gui.stack_link_mixin import StackLinkMixin
 from gui.project_mixin import ProjectMixin
+from gui.theme import apply_application_palette, apply_window_theme, style_figure
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "+/-", "Cpk"]
 
@@ -121,6 +122,7 @@ class TolstackWindow(
         self._stack_link_init_state()
 
         central = QWidget()
+        central.setObjectName("appRoot")
         self.setCentralWidget(central)
         root_layout = QHBoxLayout(central)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -131,12 +133,45 @@ class TolstackWindow(
         # Slicer-style "Prepare" panel - everything that isn't the 3D view.
         # ==================================================================
         sidebar = QTabWidget()
+        self.sidebar = sidebar
+        sidebar.setObjectName("inspectorPanel")
         sidebar.setMinimumWidth(340)
         sidebar.setMaximumWidth(460)
         sidebar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        sidebar.tabBar().hide()
+
+        # Selection inspector: context menus create engineering objects;
+        # this page shows and edits the currently selected entity's state.
+        inspector_tab = QWidget()
+        inspector_layout = QVBoxLayout(inspector_tab)
+        self.selection_name_label = QLabel("No selection")
+        self.selection_name_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        inspector_layout.addWidget(self.selection_name_label)
+        self.selection_type_label = QLabel("Select a face, edge, vertex, or solid in the viewport.")
+        self.selection_type_label.setWordWrap(True)
+        self.selection_type_label.setProperty("role", "muted")
+        inspector_layout.addWidget(self.selection_type_label)
+        inspector_layout.addSpacing(8)
+        self.selection_geometry_label = QLabel("Geometry: —")
+        self.selection_geometry_label.setWordWrap(True)
+        inspector_layout.addWidget(self.selection_geometry_label)
+        self.selection_link_label = QLabel("Persistent link: —")
+        self.selection_link_label.setWordWrap(True)
+        inspector_layout.addWidget(self.selection_link_label)
+        inspector_hint = QLabel(
+            "Right-click the selected feature to measure it, assign a datum, "
+            "add it to a position pattern, or link it to a tolerance stack."
+        )
+        inspector_hint.setWordWrap(True)
+        inspector_hint.setProperty("role", "muted")
+        inspector_layout.addWidget(inspector_hint)
+        inspector_layout.addStretch(1)
+        sidebar.addTab(inspector_tab, "Inspect")
+        self.inspector_tab = inspector_tab
 
         # --- Tab 1: Dimension bank ---
         bank_tab = QWidget()
+        self.bank_tab = bank_tab
         bank_layout = QVBoxLayout(bank_tab)
 
         bank_row1 = QHBoxLayout()
@@ -167,6 +202,7 @@ class TolstackWindow(
 
         # --- Tab 2: Stack table ---
         stack_tab = QWidget()
+        self.stack_tab = stack_tab
         stack_layout = QVBoxLayout(stack_tab)
 
         self.table = QTableWidget(0, len(COLUMNS) + 1)  # +1 for the 3D-link Value column
@@ -179,10 +215,10 @@ class TolstackWindow(
         legend = QHBoxLayout()
         legend.addWidget(QLabel("Legend:"))
         positive_label = QLabel("● Green = positive")
-        positive_label.setStyleSheet("color: #4caf50; font-weight: bold;")
+        positive_label.setStyleSheet("color: #67D39A; font-weight: 600;")
         legend.addWidget(positive_label)
         negative_label = QLabel("● Red = negative")
-        negative_label.setStyleSheet("color: #f44336; font-weight: bold;")
+        negative_label.setStyleSheet("color: #FF7474; font-weight: 600;")
         legend.addWidget(negative_label)
         legend.addStretch(1)
         stack_layout.addLayout(legend)
@@ -202,7 +238,7 @@ class TolstackWindow(
             "the feature in the viewport."
         )
         link_intro.setWordWrap(True)
-        link_intro.setStyleSheet("color: #555555; font-size: 11px;")
+        link_intro.setProperty("role", "muted")
         stack_layout.addWidget(link_intro)
 
         link_row = QHBoxLayout()
@@ -249,7 +285,9 @@ class TolstackWindow(
 
         # --- Tab 3: Results ---
         results_tab = QWidget()
+        self.results_tab = results_tab
         results_layout = QVBoxLayout(results_tab)
+        self.results_layout = results_layout
 
         self.result_label = QLabel("No results yet.")
         self.result_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -258,6 +296,7 @@ class TolstackWindow(
         results_layout.addWidget(self.result_label)
 
         self.figure = Figure(figsize=(4, 3))
+        style_figure(self.figure)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setVisible(False)
         self.figure.canvas.mpl_connect("button_press_event", self._on_histogram_click)
@@ -269,6 +308,7 @@ class TolstackWindow(
 
         # --- Tab 4: Measure ---
         measure_tab = QWidget()
+        self.measure_tab = measure_tab
         measure_layout = QVBoxLayout(measure_tab)
 
         measure_intro = QLabel(
@@ -276,7 +316,7 @@ class TolstackWindow(
             "measure the distance and angle between them."
         )
         measure_intro.setWordWrap(True)
-        measure_intro.setStyleSheet("color: #555555; font-size: 11px;")
+        measure_intro.setProperty("role", "muted")
         measure_layout.addWidget(measure_intro)
 
         slot_a_row = QHBoxLayout()
@@ -299,12 +339,13 @@ class TolstackWindow(
             "Right-click a face, edge, or vertex in the viewport to assign it as Measure A or Measure B."
         )
         measure_hint.setWordWrap(True)
-        measure_hint.setStyleSheet("color: #555555; font-size: 11px;")
+        measure_hint.setProperty("role", "muted")
         measure_layout.addWidget(measure_hint)
 
         measure_layout.addSpacing(10)
         results_box = QFrame()
         results_box.setFrameShape(QFrame.StyledPanel)
+        results_box.setProperty("surface", "card")
         results_box_layout = QVBoxLayout(results_box)
         self.measure_result_labels = {}
         for key, caption in [
@@ -367,6 +408,7 @@ class TolstackWindow(
 
         # --- Tab 5: Eclipse (LED-hole vs sticker-hole occlusion) ---
         eclipse_tab = QWidget()
+        self.eclipse_tab = eclipse_tab
         eclipse_layout = QVBoxLayout(eclipse_tab)
 
         eclipse_intro = QLabel(
@@ -375,12 +417,13 @@ class TolstackWindow(
             "their relative position."
         )
         eclipse_intro.setWordWrap(True)
-        eclipse_intro.setStyleSheet("color: #555555; font-size: 11px;")
+        eclipse_intro.setProperty("role", "muted")
         eclipse_layout.addWidget(eclipse_intro)
 
         def add_tolerance_row(layout, prefix: str, caption: str, use_measured_btn=None):
             group = QFrame()
             group.setFrameShape(QFrame.StyledPanel)
+            group.setProperty("surface", "card")
             group_layout = QVBoxLayout(group)
             header_row = QHBoxLayout()
             header_label = QLabel(caption)
@@ -437,12 +480,13 @@ class TolstackWindow(
         eclipse_layout.addLayout(run_row)
 
         run_eclipse_btn = QPushButton("Run eclipse analysis")
-        run_eclipse_btn.setStyleSheet("font-weight: bold;")
+        run_eclipse_btn.setProperty("role", "primary")
         run_eclipse_btn.clicked.connect(self.run_eclipse_analysis)
         eclipse_layout.addWidget(run_eclipse_btn)
 
         eclipse_results_box = QFrame()
         eclipse_results_box.setFrameShape(QFrame.StyledPanel)
+        eclipse_results_box.setProperty("surface", "card")
         eclipse_results_layout = QVBoxLayout(eclipse_results_box)
         self.eclipse_result_labels = {}
         for key, caption in [
@@ -462,6 +506,7 @@ class TolstackWindow(
         eclipse_layout.addWidget(eclipse_results_box)
 
         self.eclipse_figure = Figure(figsize=(4, 3))
+        style_figure(self.eclipse_figure)
         self.eclipse_canvas = FigureCanvasQTAgg(self.eclipse_figure)
         self.eclipse_canvas.setMinimumHeight(240)
         self.eclipse_canvas.setVisible(False)
@@ -477,6 +522,7 @@ class TolstackWindow(
 
         # --- Tab 6: GD&T Position ---
         gdt_tab = QWidget()
+        self.gdt_tab = gdt_tab
         gdt_layout = QVBoxLayout(gdt_tab)
 
         gdt_intro = QLabel(
@@ -485,11 +531,12 @@ class TolstackWindow(
             "edge/hole for each of Primary/Secondary/Tertiary."
         )
         gdt_intro.setWordWrap(True)
-        gdt_intro.setStyleSheet("color: #555555; font-size: 11px;")
+        gdt_intro.setProperty("role", "muted")
         gdt_layout.addWidget(gdt_intro)
 
         datum_box = QFrame()
         datum_box.setFrameShape(QFrame.StyledPanel)
+        datum_box.setProperty("surface", "card")
         datum_box_layout = QVBoxLayout(datum_box)
         self.datum_slot_labels = {}
         for slot_name, arm_fn, clear_fn in [
@@ -510,12 +557,12 @@ class TolstackWindow(
             datum_box_layout.addLayout(row)
 
         build_drf_btn = QPushButton("Build datum reference frame")
-        build_drf_btn.setStyleSheet("font-weight: bold;")
+        build_drf_btn.setProperty("role", "primary")
         build_drf_btn.clicked.connect(self.build_datum_frame)
         datum_box_layout.addWidget(build_drf_btn)
         self.drf_status_label = QLabel("Datum reference frame not built yet.")
         self.drf_status_label.setWordWrap(True)
-        self.drf_status_label.setStyleSheet("font-size: 11px; color: #555555;")
+        self.drf_status_label.setProperty("role", "muted")
         datum_box_layout.addWidget(self.drf_status_label)
         gdt_layout.addWidget(datum_box)
 
@@ -539,13 +586,14 @@ class TolstackWindow(
 
         callout_box = QFrame()
         callout_box.setFrameShape(QFrame.StyledPanel)
+        callout_box.setProperty("surface", "card")
         callout_layout = QGridLayout(callout_box)
         callout_layout.setHorizontalSpacing(12)
         callout_layout.setVerticalSpacing(4)
 
         def add_callout_field(row, col, label_text, widget):
             label = QLabel(label_text)
-            label.setStyleSheet("font-size: 11px; color: #555555;")
+            label.setProperty("role", "muted")
             cell_layout = QVBoxLayout()
             cell_layout.setContentsMargins(0, 0, 0, 0)
             cell_layout.setSpacing(2)
@@ -589,7 +637,7 @@ class TolstackWindow(
         eval_nominal_btn = QPushButton("Evaluate (as-modeled)")
         eval_nominal_btn.clicked.connect(self.evaluate_pattern_deterministic)
         eval_mc_btn = QPushButton("Run Monte Carlo")
-        eval_mc_btn.setStyleSheet("font-weight: bold;")
+        eval_mc_btn.setProperty("role", "primary")
         eval_mc_btn.clicked.connect(self.run_pattern_monte_carlo_analysis)
         eval_btn_row.addWidget(eval_nominal_btn)
         eval_btn_row.addWidget(eval_mc_btn)
@@ -597,6 +645,7 @@ class TolstackWindow(
 
         gdt_results_box = QFrame()
         gdt_results_box.setFrameShape(QFrame.StyledPanel)
+        gdt_results_box.setProperty("surface", "card")
         gdt_results_layout = QVBoxLayout(gdt_results_box)
         self.gdt_result_labels = {}
         for key, caption in [
@@ -616,6 +665,7 @@ class TolstackWindow(
         gdt_layout.addWidget(gdt_results_box)
 
         self.gdt_figure = Figure(figsize=(4, 3))
+        style_figure(self.gdt_figure)
         self.gdt_canvas = FigureCanvasQTAgg(self.gdt_figure)
         self.gdt_canvas.setMinimumHeight(240)
         self.gdt_canvas.setVisible(False)
@@ -629,7 +679,40 @@ class TolstackWindow(
         gdt_scroll.setFrameShape(QFrame.NoFrame)
         sidebar.addTab(gdt_scroll, "GD&T Position")
 
-        root_layout.addWidget(sidebar, stretch=0)
+        # Workspace rail replaces the always-visible tab strip. Measure is
+        # intentionally contextual and opens automatically from right-click.
+        workspace_rail = QFrame()
+        workspace_rail.setObjectName("workspaceRail")
+        workspace_rail.setFixedWidth(78)
+        workspace_rail_layout = QVBoxLayout(workspace_rail)
+        workspace_rail_layout.setContentsMargins(6, 8, 6, 8)
+        workspace_rail_layout.setSpacing(6)
+        self.workspace_button_group = QButtonGroup(self)
+        self.workspace_button_group.setExclusive(True)
+        self.workspace_buttons = {}
+        self.workspace_pages = {
+            "inspect": inspector_tab,
+            "library": bank_tab,
+            "stack": stack_tab,
+            "results": results_tab,
+            "gdt": gdt_scroll,
+            "eclipse": eclipse_scroll,
+            "measure": measure_tab,
+        }
+        for key, caption in (
+            ("inspect", "Inspect"), ("library", "Library"),
+            ("stack", "Stack"), ("results", "Results"),
+            ("gdt", "GD&T"), ("eclipse", "Eclipse"),
+        ):
+            button = QPushButton(caption)
+            button.setCheckable(True)
+            button.setMinimumHeight(42)
+            button.clicked.connect(lambda checked=False, name=key: self._show_workspace(name))
+            workspace_rail_layout.addWidget(button)
+            self.workspace_button_group.addButton(button)
+            self.workspace_buttons[key] = button
+        workspace_rail_layout.addStretch(1)
+        root_layout.addWidget(workspace_rail, stretch=0)
 
         # ==================================================================
         # Right/main column: 3D STEP viewport is the main widget, with an
@@ -643,48 +726,48 @@ class TolstackWindow(
         # --- Always-visible analysis toolbar (above the viewport) ---
         toolbar = QFrame()
         toolbar.setFrameShape(QFrame.StyledPanel)
-        toolbar.setStyleSheet(
-            "QFrame { background-color: #222222; border: 1px solid #d0d3d7; border-radius: 4px; }"
-        )
+        toolbar.setObjectName("viewportToolbar")
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(8, 6, 8, 6)
 
         self.method_combo = QComboBox()
         self.method_combo.addItems(["worst_case", "rss", "monte_carlo"])
-        toolbar_layout.addWidget(self.method_combo)
-
-        toolbar_layout.addWidget(QLabel("Global Cpk:"))
         self.default_cpk_input = QLineEdit()
         self.default_cpk_input.setPlaceholderText("empty = uniform")
         self.default_cpk_input.setMaximumWidth(90)
-        toolbar_layout.addWidget(self.default_cpk_input)
-
-        toolbar_layout.addWidget(QLabel("Iterations:"))
         self.iterations_input = QSpinBox()
         self.iterations_input.setRange(100, 1000000)
         self.iterations_input.setSingleStep(1000)
         self.iterations_input.setValue(10000)
         self.iterations_input.setMaximumWidth(120)
-        toolbar_layout.addWidget(self.iterations_input)
-
-        toolbar_layout.addWidget(QLabel("Range min:"))
         self.range_min_input = QDoubleSpinBox()
         self.range_min_input.setRange(-1e12, 1e12)
         self.range_min_input.setDecimals(4)
         self.range_min_input.setValue(0.0)
         self.range_min_input.setMaximumWidth(110)
-        toolbar_layout.addWidget(self.range_min_input)
-
-        toolbar_layout.addWidget(QLabel("Range max:"))
         self.range_max_input = QDoubleSpinBox()
         self.range_max_input.setRange(-1e12, 1e12)
         self.range_max_input.setDecimals(4)
         self.range_max_input.setValue(0.0)
         self.range_max_input.setMaximumWidth(110)
-        toolbar_layout.addWidget(self.range_max_input)
-
         self.range_min_input.valueChanged.connect(self._sync_interval_from_inputs)
         self.range_max_input.valueChanged.connect(self._sync_interval_from_inputs)
+
+        analysis_settings = QFrame()
+        analysis_settings.setFrameShape(QFrame.StyledPanel)
+        analysis_settings.setProperty("surface", "card")
+        analysis_settings_layout = QGridLayout(analysis_settings)
+        analysis_settings_layout.addWidget(QLabel("Method"), 0, 0)
+        analysis_settings_layout.addWidget(self.method_combo, 0, 1)
+        analysis_settings_layout.addWidget(QLabel("Global Cpk"), 1, 0)
+        analysis_settings_layout.addWidget(self.default_cpk_input, 1, 1)
+        analysis_settings_layout.addWidget(QLabel("Iterations"), 2, 0)
+        analysis_settings_layout.addWidget(self.iterations_input, 2, 1)
+        analysis_settings_layout.addWidget(QLabel("Acceptance min"), 3, 0)
+        analysis_settings_layout.addWidget(self.range_min_input, 3, 1)
+        analysis_settings_layout.addWidget(QLabel("Acceptance max"), 4, 0)
+        analysis_settings_layout.addWidget(self.range_max_input, 4, 1)
+        results_layout.insertWidget(0, analysis_settings)
 
         toolbar_layout.addStretch(1)
 
@@ -720,20 +803,18 @@ class TolstackWindow(
         clear_step_btn.clicked.connect(self.clear_step_preview)
         toolbar_layout.addWidget(clear_step_btn)
 
-        run_btn = QPushButton("Calculate")
-        run_btn.setStyleSheet("font-weight: bold;")
-        run_btn.clicked.connect(self.run_analysis)
+        run_btn = QPushButton("Analyze")
+        run_btn.setProperty("role", "primary")
+        run_btn.clicked.connect(self._run_analysis_and_show_results)
         toolbar_layout.addWidget(run_btn)
 
         viewport_column.addWidget(toolbar)
 
         # --- Main widget: the 3D STEP viewport itself ---
         self.step_preview_container = QWidget()
+        self.step_preview_container.setObjectName("viewportSurface")
         self.step_preview_container.setMinimumHeight(240)
         self.step_preview_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.step_preview_container.setStyleSheet(
-            "border: 1px solid #cccccc; border-radius: 4px; background-color: #f8f8f8;"
-        )
         self.step_preview_layout = QVBoxLayout(self.step_preview_container)
         self.step_preview_layout.setContentsMargins(6, 6, 6, 6)
         self._init_step_preview_renderer()
@@ -741,25 +822,63 @@ class TolstackWindow(
 
         # --- Slim status strip (below the viewport) ---
         status_strip = QFrame()
-        status_strip.setStyleSheet(
-            "QFrame { border-top: 1px solid #d0d3d7; }"
-        )
+        status_strip.setObjectName("statusStrip")
         status_strip.setMaximumHeight(28)
         status_strip_layout = QHBoxLayout(status_strip)
         status_strip_layout.setContentsMargins(4, 2, 4, 2)
         self.step_status_label = QLabel("No STEP file loaded yet.")
         self.step_status_label.setWordWrap(False)
-        self.step_status_label.setStyleSheet("font-size: 11px; color: #555555;")
+        self.step_status_label.setProperty("role", "status")
         status_strip_layout.addWidget(self.step_status_label, stretch=1)
         viewport_column.addWidget(status_strip)
 
         root_layout.addLayout(viewport_column, stretch=1)
+        root_layout.addWidget(sidebar, stretch=0)
 
         # Seed example row + bank so the GUI doesn't start empty
         self._seed_example()
         self._seed_bank()
         self._project_install_menu()
         self._project_update_title()
+        self._show_workspace("inspect")
+        apply_window_theme(self)
+
+    def _show_workspace(self, name: str):
+        page = self.workspace_pages.get(name)
+        if page is None:
+            return
+        self.sidebar.setCurrentWidget(page)
+        button = self.workspace_buttons.get(name)
+        if button is not None:
+            button.setChecked(True)
+
+    def _run_analysis_and_show_results(self):
+        self.run_analysis()
+        self._show_workspace("results")
+
+    def _update_selection_inspector(self, info: dict | None):
+        if info is None:
+            self.selection_name_label.setText("No selection")
+            self.selection_type_label.setText("Select a feature in the viewport.")
+            self.selection_geometry_label.setText("Geometry: —")
+            self.selection_link_label.setText("Persistent link: —")
+            return
+        kind = info.get("type", "feature")
+        index = info.get("index", 0)
+        feature = self.project.features.get(info.get("feature_id"))
+        self.selection_name_label.setText(feature.name if feature else f"{kind.title()} {index + 1}")
+        self.selection_type_label.setText(f"{kind.title()} #{index}")
+        circle = info.get("circle")
+        if circle is not None:
+            geometry = f"Circular geometry · diameter {circle['radius'] * 2:.4f} {self.project.units.length}"
+        elif kind == "solid":
+            geometry = f"Solid occurrence · body {index + 1}"
+        else:
+            geometry = f"{len(info.get('points', []))} sampled geometry points"
+        self.selection_geometry_label.setText(f"Geometry: {geometry}")
+        self.selection_link_label.setText(
+            f"Persistent link: {'matched' if feature else 'not registered yet'}"
+        )
 
     def closeEvent(self, event):
         # Without this, closing the window while a large-assembly STEP
@@ -788,6 +907,7 @@ def main():
     except Exception:
         app = QApplication.instance() or QApplication(sys.argv)
 
+    apply_application_palette(app)
     window = TolstackWindow()
     window.show()
     sys.exit(app.exec())

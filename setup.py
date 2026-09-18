@@ -17,6 +17,13 @@ setup(
     entry_points={
         "gui_scripts": ["tolforge=gui.app:main"],
     },
+    package_data={
+        "gui": [
+            "assets/icons/gdt/*.svg",
+            "assets/icons/gdt/*.json",
+            "assets/icons/gdt/*.md",
+        ],
+    },
     include_package_data=True,
     classifiers=[
         "Programming Language :: Python :: 3",

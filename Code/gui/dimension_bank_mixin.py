@@ -67,8 +67,8 @@ class DimensionBankMixin:
         checkbox.setToolTip("Toggle the dimension sign")
         checkbox.setStyleSheet(
             "QCheckBox { padding: 2px; }"
-            "QCheckBox::indicator { width: 34px; height: 18px; border-radius: 9px; border: 1px solid #777; background: #f44336; color: white; font-weight: bold; }"
-            "QCheckBox::indicator:checked { background: #4caf50; }"
+            "QCheckBox::indicator { width: 34px; height: 18px; border-radius: 9px; border: 1px solid #56626D; background: #FF7474; color: white; font-weight: bold; }"
+            "QCheckBox::indicator:checked { background: #67D39A; }"
             "QCheckBox::indicator:checked::before { content: '+'; }"
             "QCheckBox::indicator:unchecked::before { content: '-'; }"
         )

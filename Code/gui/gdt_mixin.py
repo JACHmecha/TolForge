@@ -18,6 +18,7 @@ from tolstack.gdt import (
     PatternFeature, PatternPositionControl,
     evaluate_pattern_nominal, run_pattern_monte_carlo, virtual_condition,
 )
+from gui.theme import COLORS, style_axes
 
 # Column layout for self.pattern_table - kept short since this table lives
 # in a ~350-450px sidebar; the full meaning of each is in the tab's own
@@ -97,6 +98,13 @@ class GdtMixin:
             self._pattern_arm = False
             return True
 
+        slot = self._datum_arm
+        self._datum_arm = None
+        self._set_datum_from_info(slot, info)
+        return True
+
+    def _set_datum_from_info(self, slot: str, info: dict) -> bool:
+        """Assign a picked feature directly; used by armed picks and context menus."""
         point, direction, description = self._gdt_extract_datum_geometry(info)
         if point is None:
             QMessageBox.warning(
@@ -105,20 +113,21 @@ class GdtMixin:
                 "edge/hole (uses its fitted center + axis) - a vertex or a "
                 "clearly non-circular edge doesn't define an orientation."
             )
-            return True
-
-        slot = self._datum_arm
+            return False
         try:
             feature_id = self._project_register_feature(info, label=f"Datum {slot}")
         except ValueError as exc:
             QMessageBox.warning(self, "Could not register datum feature", str(exc))
-            return True
+            return False
         self._datum_slot[slot] = {
             "point": point, "direction": direction, "description": description,
             "feature_id": feature_id,
         }
-        self._datum_arm = None
+        if hasattr(self, "_update_selection_inspector"):
+            self._update_selection_inspector(info)
         self._update_datum_labels()
+        if hasattr(self, "_show_workspace"):
+            self._show_workspace("gdt")
         return True
 
     def _gdt_extract_datum_geometry(self, info: dict):
@@ -370,11 +379,15 @@ class GdtMixin:
 
         self.gdt_figure.clear()
         ax = self.gdt_figure.add_subplot(111)
-        ax.hist(mc.worst_feature_margin, bins=40, color="#e45756", edgecolor="white")
-        ax.axvline(0, color="black", linewidth=1, linestyle="--")
+        ax.hist(
+            mc.worst_feature_margin, bins=40, color=COLORS["negative"],
+            edgecolor=COLORS["panel"],
+        )
+        ax.axvline(0, color=COLORS["selection"], linewidth=1.4, linestyle="--")
         ax.set_xlabel("Worst-feature margin (allowed - error; <0 = pattern fails)")
         ax.set_ylabel("Samples")
         ax.set_title("Pattern position tolerance - worst-feature margin distribution")
+        style_axes(ax)
         self.gdt_figure.tight_layout()
         self.gdt_canvas.setVisible(True)
         self.gdt_canvas.draw()

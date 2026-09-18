@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "view_box": "0 0 64 64",
+  "icons": [
+    {"id": "straightness", "label": "Straightness", "category": "form", "file": "straightness.svg"},
+    {"id": "flatness", "label": "Flatness", "category": "form", "file": "flatness.svg"},
+    {"id": "circularity", "label": "Circularity", "category": "form", "file": "circularity.svg"},
+    {"id": "cylindricity", "label": "Cylindricity", "category": "form", "file": "cylindricity.svg"},
+    {"id": "profile_line", "label": "Profile of a line", "category": "profile", "file": "profile-line.svg"},
+    {"id": "profile_surface", "label": "Profile of a surface", "category": "profile", "file": "profile-surface.svg"},
+    {"id": "angularity", "label": "Angularity", "category": "orientation", "file": "angularity.svg"},
+    {"id": "perpendicularity", "label": "Perpendicularity", "category": "orientation", "file": "perpendicularity.svg"},
+    {"id": "parallelism", "label": "Parallelism", "category": "orientation", "file": "parallelism.svg"},
+    {"id": "position", "label": "Position", "category": "location", "file": "position.svg"},
+    {"id": "concentricity", "label": "Concentricity", "category": "location", "file": "concentricity.svg"},
+    {"id": "symmetry", "label": "Symmetry", "category": "location", "file": "symmetry.svg"},
+    {"id": "circular_runout", "label": "Circular runout", "category": "runout", "file": "circular-runout.svg"},
+    {"id": "total_runout", "label": "Total runout", "category": "runout", "file": "total-runout.svg"},
+    {"id": "diameter", "label": "Diameter", "category": "zone", "file": "diameter.svg"},
+    {"id": "spherical_diameter", "label": "Spherical diameter", "category": "zone", "file": "spherical-diameter.svg"},
+    {"id": "mmc", "label": "Maximum material condition", "category": "modifier", "file": "mmc.svg"},
+    {"id": "lmc", "label": "Least material condition", "category": "modifier", "file": "lmc.svg"},
+    {"id": "rfs", "label": "Regardless of feature size", "category": "modifier", "file": "rfs.svg"},
+    {"id": "projected_tolerance_zone", "label": "Projected tolerance zone", "category": "modifier", "file": "projected-tolerance-zone.svg"},
+    {"id": "tangent_plane", "label": "Tangent plane", "category": "modifier", "file": "tangent-plane.svg"},
+    {"id": "free_state", "label": "Free state", "category": "modifier", "file": "free-state.svg"},
+    {"id": "datum_feature", "label": "Datum feature", "category": "datum", "file": "datum-feature.svg"},
+    {"id": "datum_target", "label": "Datum target", "category": "datum", "file": "datum-target.svg"}
+  ]
+}

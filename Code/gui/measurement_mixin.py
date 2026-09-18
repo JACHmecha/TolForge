@@ -107,13 +107,64 @@ class MeasurementMixin:
             )
 
     def _build_measure_context_menu(self, info: dict | None):
-        menu = QMenu("Measurement", self if isinstance(self, QWidget) else None)
+        menu = QMenu("Feature actions", self if isinstance(self, QWidget) else None)
 
+        inspect_action = QAction("Inspect properties", menu)
+        inspect_action.setEnabled(info is not None)
+        inspect_action.triggered.connect(
+            lambda checked=False, info=info: self._context_inspect_feature(info)
+        )
+        menu.addAction(inspect_action)
+        menu.addSeparator()
+
+        measure_enabled = info is not None and info.get("type") in ("face", "edge", "vertex")
         for slot, label in (("A", "Set as Measure A"), ("B", "Set as Measure B")):
             action = QAction(label, menu)
-            action.setEnabled(info is not None)
-            action.triggered.connect(lambda checked=False, slot=slot, info=info: self._measure_assign_slot(slot, info))
+            action.setEnabled(measure_enabled)
+            action.triggered.connect(
+                lambda checked=False, slot=slot, info=info: self._context_assign_measure(slot, info)
+            )
             menu.addAction(action)
+
+        if info is not None and info.get("type") in ("face", "edge"):
+            is_circular_edge = self._context_is_circular_edge(info)
+            if is_circular_edge:
+                menu.addSeparator()
+                size_action = QAction("Add size tolerance…", menu)
+                size_action.triggered.connect(
+                    lambda checked=False, info=info: self.context_add_size_tolerance(info)
+                )
+                menu.addAction(size_action)
+
+                pattern_action = QAction("Add to position pattern…", menu)
+                pattern_action.triggered.connect(
+                    lambda checked=False, info=info: self._context_add_to_pattern(info)
+                )
+                menu.addAction(pattern_action)
+
+            datum_menu = menu.addMenu("Set as datum")
+            for slot in ("Primary", "Secondary", "Tertiary"):
+                datum_action = QAction(slot, datum_menu)
+                datum_action.triggered.connect(
+                    lambda checked=False, slot=slot, info=info: self._set_datum_from_info(slot, info)
+                )
+                datum_menu.addAction(datum_action)
+
+            link_menu = menu.addMenu("Link selected stack term")
+            for mode, label in (
+                ("diametral", "Diameter"),
+                ("positional", "Position"),
+                ("normal_offset", "Normal offset"),
+            ):
+                link_action = QAction(label, link_menu)
+                link_action.setEnabled(
+                    mode == "normal_offset" or is_circular_edge
+                )
+                link_action.triggered.connect(
+                    lambda checked=False, mode=mode, info=info:
+                    self.context_link_selected_row(info, mode)
+                )
+                link_menu.addAction(link_action)
 
         menu.addSeparator()
         bank_action = QAction("Add measurement to Dimension Bank", menu)
@@ -127,12 +178,57 @@ class MeasurementMixin:
         menu.addAction(bank_action)
         return menu
 
+    def _context_is_circular_edge(self, info: dict | None) -> bool:
+        """Return whether an entity is safe to expose as a hole/shaft.
+
+        Face tessellations contain interior mesh vertices, so fitting all
+        their points can make an ordinary planar face look circular. STEP
+        edge polylines are the reliable boundary representation here. The
+        relative residual rejects curved-but-not-circular edge geometry.
+        """
+        if info is None or info.get("type") != "edge" or info.get("points") is None:
+            return False
+        self._measure_ensure_circle_fit(info)
+        circle = info.get("circle")
+        if circle is None:
+            return False
+        radius = float(circle.get("radius", 0.0))
+        residual = float(circle.get("rms_residual", float("inf")))
+        return radius > 1e-9 and residual / radius <= 0.02
+
+    def _context_inspect_feature(self, info: dict | None):
+        if hasattr(self, "_update_selection_inspector"):
+            self._update_selection_inspector(info)
+        if hasattr(self, "_show_workspace"):
+            self._show_workspace("inspect")
+
+    def _context_assign_measure(self, slot: str, info: dict | None):
+        self._measure_assign_slot(slot, info)
+        if hasattr(self, "_show_workspace"):
+            self._show_workspace("measure")
+
+    def _context_add_to_pattern(self, info: dict):
+        if getattr(self, "_current_drf", None) is None:
+            if hasattr(self, "_show_workspace"):
+                self._show_workspace("gdt")
+            QMessageBox.warning(
+                self, "No datum frame",
+                "Assign Primary, Secondary, and Tertiary datums, then build the datum frame first.",
+            )
+            return
+        self._pattern_consume_pick(info)
+        if hasattr(self, "_show_workspace"):
+            self._show_workspace("gdt")
+
     def _add_context_menu_measurement_to_bank(self):
         if self._measure_slot["A"] is not None and self._measure_slot["B"] is not None:
             self._measure_compute()
         self.add_measurement_to_bank()
 
     def _show_measure_context_menu(self, info: dict | None, pos):
+        self._selected_entity_info = info
+        if hasattr(self, "_update_selection_inspector"):
+            self._update_selection_inspector(info)
         menu = self._build_measure_context_menu(info)
         if self._step_preview_renderer is not None:
             if isinstance(pos, tuple):

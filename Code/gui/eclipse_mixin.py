@@ -11,6 +11,7 @@ just measured from the STEP geometry.
 from PySide6.QtWidgets import QMessageBox
 
 from tolstack.eclipse import ToleranceInput, EclipseInputs, run_monte_carlo, worst_case
+from gui.theme import COLORS, style_axes
 
 
 class EclipseMixin:
@@ -135,10 +136,14 @@ class EclipseMixin:
     def _eclipse_plot_histogram(self, samples):
         self.eclipse_figure.clear()
         ax = self.eclipse_figure.add_subplot(111)
-        ax.hist(samples * 100, bins=40, color="#4c78a8", edgecolor="white")
+        ax.hist(
+            samples * 100, bins=40, color=COLORS["accent"],
+            edgecolor=COLORS["panel"],
+        )
         ax.set_xlabel("Eclipse fraction (%)")
         ax.set_ylabel("Samples")
         ax.set_title("Eclipse fraction distribution (Monte Carlo)")
+        style_axes(ax)
         self.eclipse_figure.tight_layout()
         self.eclipse_canvas.setVisible(True)
         self.eclipse_canvas.draw()

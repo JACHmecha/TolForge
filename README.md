@@ -17,9 +17,12 @@ vertex selection.
 - **STEP file 3D viewer**: load a `.step`/`.stp` file and view it in an
   embedded, interactive 3D viewport - rotate, pan, zoom, and click to
   select individual faces, edges, or vertices.
-- **Measurement context menu**: right-click a face, edge, or vertex in the
-  3D viewport to assign it as Measure A or Measure B, then add the current
-  measurement directly to the dimension bank.
+- **Contextual feature actions**: right-click selected geometry to inspect it,
+  measure it, assign datum references, create size/position controls for
+  circular edges, or link it to the selected stack term.
+- **Focused workspace rail**: switch between Inspect, Library, Stack, Results,
+  GD&T, and Eclipse while keeping the 3D viewport visible. Analysis settings
+  live with Results instead of occupying the viewport toolbar.
 
 ## Project structure
 
@@ -54,11 +57,11 @@ names or transient STEP topology indices.
 GD&T size acceptance, MMC bonus, virtual-condition, and pin/hole clearance
 conventions are documented in [`docs/gdt-semantics.md`](docs/gdt-semantics.md).
 
-The GUI is split into focused files rather than one large module:
-`TolstackWindow` (in `app.py`) combines three mixins
-(`StepViewerMixin`, `DimensionBankMixin`, `AnalysisMixin`), each of which
-assumes certain widgets already exist on `self` - see each mixin's
-docstring for exactly which ones.
+The GUI is split into focused mixins rather than one large module.
+`TolstackWindow` (in `app.py`) composes the STEP viewer, measurement,
+dimension-bank, analysis, project, stack-linking, GD&T, and eclipse-analysis
+behaviors; see each mixin's docstring for the widgets and collaborators it
+expects.
 
 ## Requirements
 
@@ -139,16 +142,18 @@ interpreter, not whatever `python` resolves to by default.
 | Pan | Right-click + drag, or Shift + left-click + drag |
 | Zoom | Scroll wheel |
 | Select a face / edge / vertex | Left-click (without dragging) |
-| Open measurement context menu | Right-click (without dragging) |
+| Open feature actions | Right-click (without dragging) |
 
 Selecting an entity shows its type and index in the status label above
 the viewport. Loading a new STEP file replaces the current geometry; use
 **Clear** to empty the viewport without loading a new file.
 
-For measurements, right-click an entity to open the context menu and set
-it as Measure A or Measure B. Once two entities are selected, the Measure
-panel shows the same distance/angle/circle-fit results as before, and the
-same menu can add the current measurement to the dimension bank.
+Right-click an entity to open its feature actions. Faces can become datum
+references or normal-offset links. Circular edges additionally expose size
+tolerance, position-pattern, diameter-link, and position-link actions. Choose
+Measure A or Measure B to open the contextual Measure page; once both are set,
+the page shows distance, angle, and circle-fit results and can add the current
+measurement to the dimension bank.
 
 ### Using `tolstack` without the GUI
 
