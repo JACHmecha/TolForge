@@ -10,6 +10,7 @@ and analysis code.
 """
 
 from pathlib import Path
+import math
 
 import numpy as np
 
@@ -21,13 +22,12 @@ from compas.colors import Color
 from .step_renderer import Renderer, detect_step_backend
 from .step_load_worker import StepLoadWorker
 
-# Qualitative palette for coloring faces by which solid they belong to -
-# cycles if there are more solids than colors. Chosen for mutual
-# distinguishability (not a sequential/gradient palette) rather than for
-# any particular aesthetic theme.
+# Muted engineering-material palette for distinguishing assembly solids on
+# the dark viewport. The hues remain distinct without competing with the
+# orange selection state or the blue application accent.
 SOLID_COLOR_PALETTE = [
-    "#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2",
-    "#eeca3b", "#b279a2", "#ff9da6", "#9d755d", "#bab0ac",
+    "#64869C", "#8797A3", "#5F817C", "#9A785F", "#786F91",
+    "#916F68", "#637F9F", "#788A70", "#887487", "#858E93",
 ]
 
 _PICK_REJECTED = object()  # sentinel: this pick didn't match the active filter
@@ -177,6 +177,8 @@ class StepViewerMixin:
         center = (max_corner + min_corner) / 2
         diagonal = max(float(np.linalg.norm(max_corner - min_corner)), 1.0)
 
+        self._configure_viewport_grid(renderer, diagonal)
+
         camera = renderer.camera
         camera.scale = diagonal / 10  # matches compas_viewer's own tuned constant
         camera.target = center
@@ -187,9 +189,40 @@ class StepViewerMixin:
             direction = np.array([1.0, 1.0, 1.0])
             direction_norm = np.linalg.norm(direction)
         unit_vector = direction / direction_norm
-        camera.position = np.array(camera.target) - unit_vector * diagonal
+        # Leave enough breathing room for the model at oblique camera angles;
+        # one diagonal fills the viewport too aggressively and clips long
+        # parts near the corners. The reference UI keeps the model at roughly
+        # two-thirds of the available canvas.
+        camera.position = np.array(camera.target) - unit_vector * diagonal * 1.6
 
         renderer.update()
+
+    @staticmethod
+    def _nice_grid_extent(model_diagonal: float) -> float:
+        """Round a model size up to a stable 1/2/5 engineering interval."""
+        value = max(float(model_diagonal), 1e-9)
+        magnitude = 10 ** math.floor(math.log10(value))
+        normalized = value / magnitude
+        multiplier = 1.0 if normalized <= 1 else 2.0 if normalized <= 2 else 5.0 if normalized <= 5 else 10.0
+        return multiplier * magnitude
+
+    def _configure_viewport_grid(self, renderer, model_diagonal: float) -> None:
+        """Scale the world grid to the loaded model while keeping 20 cells."""
+        grid = getattr(renderer, "grid", None)
+        if grid is None:
+            return
+        extent = self._nice_grid_extent(model_diagonal)
+        if grid.dx == extent and grid.dy == extent and grid.nx == 10 and grid.ny == 10:
+            return
+        renderer.makeCurrent()
+        try:
+            grid.dx = extent
+            grid.dy = extent
+            grid.nx = 10
+            grid.ny = 10
+            grid.init()
+        finally:
+            renderer.doneCurrent()
 
     def _start_step_load(self, path: str):
         """Kick off STEP parsing/tessellation on a background QThread.
@@ -287,8 +320,8 @@ class StepViewerMixin:
             # _group_faces_by_solid docstring for why), and keeping them
             # neutral also reads better visually as wireframe/point accents
             # against the colored, shaded faces.
-            edge_color = Color.from_hex("#1f2d3d")
-            vertex_color = Color.from_hex("#e45756")
+            edge_color = Color.from_hex("#111920")
+            vertex_color = Color.from_hex("#FFAE5C")
 
             solid_palette = [
                 Color.from_hex(hex_code) for hex_code in SOLID_COLOR_PALETTE
@@ -315,7 +348,7 @@ class StepViewerMixin:
 
             for i, polyline in enumerate(result.edge_polylines):
                 try:
-                    obj = scene.add(polyline, linecolor=edge_color, linewidth=2)
+                    obj = scene.add(polyline, linecolor=edge_color, linewidth=1.5)
                 except TypeError:
                     obj = scene.add(polyline)
                 if obj is not None:

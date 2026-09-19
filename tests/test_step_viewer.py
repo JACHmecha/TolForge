@@ -9,6 +9,8 @@ from PySide6.QtWidgets import QApplication
 
 from gui import app as gui_app
 from gui.measurement_mixin import MeasurementMixin
+from gui.step_renderer import VIEWPORT_THEME
+from gui.step_viewer_mixin import StepViewerMixin
 
 
 def test_detect_step_backend_reports_missing_optional_dependencies(monkeypatch):
@@ -23,6 +25,17 @@ def test_detect_step_backend_reports_missing_optional_dependencies(monkeypatch):
 
     assert backend is None
     assert "compas_occ backend" in message.lower()
+
+
+def test_viewport_theme_matches_application_and_grid_scales_cleanly():
+    assert VIEWPORT_THEME == {
+        "background": "#1C2228",
+        "grid": "#343E47",
+        "selection": "#FFAE5C",
+    }
+    assert StepViewerMixin._nice_grid_extent(0.7) == 1.0
+    assert StepViewerMixin._nice_grid_extent(18.0) == 20.0
+    assert StepViewerMixin._nice_grid_extent(126.0) == 200.0
 
 
 def test_measure_context_menu_exposes_slot_and_bank_actions():

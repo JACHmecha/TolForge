@@ -816,7 +816,7 @@ class TolstackWindow(
         self.step_preview_container.setMinimumHeight(240)
         self.step_preview_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.step_preview_layout = QVBoxLayout(self.step_preview_container)
-        self.step_preview_layout.setContentsMargins(6, 6, 6, 6)
+        self.step_preview_layout.setContentsMargins(0, 0, 0, 0)
         self._init_step_preview_renderer()
         viewport_column.addWidget(self.step_preview_container, stretch=1)
 

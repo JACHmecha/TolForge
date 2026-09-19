@@ -8,6 +8,13 @@ of the application and are easiest to reason about on their own.
 
 import importlib.util
 
+
+VIEWPORT_THEME = {
+    "background": "#1C2228",
+    "grid": "#343E47",
+    "selection": "#FFAE5C",
+}
+
 try:
     from compas_viewer.renderer import Renderer as _BaseRenderer
     from PySide6.QtCore import Qt as _Qt
@@ -38,6 +45,21 @@ try:
 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            # The embedded renderer reads these values during initializeGL,
+            # which occurs after construction when Qt first shows the widget.
+            # Set them here so the OpenGL canvas belongs to the same visual
+            # system as the surrounding TolForge shell.
+            from compas.colors import Color
+
+            renderer_config = self.viewer.config.renderer
+            renderer_config.backgroundcolor = Color.from_hex(VIEWPORT_THEME["background"])
+            renderer_config.gridcolor = Color.from_hex(VIEWPORT_THEME["grid"])
+            renderer_config.selectioncolor = Color.from_hex(VIEWPORT_THEME["selection"])
+            renderer_config.show_grid = True
+            renderer_config.show_gridz = False
+            renderer_config.gridmode = "full"
+            renderer_config.rendermode = "lighted"
+            self._rendermode = "lighted"
             self._drag_button = None
             self._last_pos = None
             self._dragged_distance = 0.0
