@@ -62,15 +62,21 @@ class DimensionBankMixin:
             self.table.removeRow(row)
 
     def _set_sign_switch(self, row: int, sign: str | int):
+        existing = self.table.cellWidget(row, 4)
+        if isinstance(existing, QCheckBox):
+            existing.setChecked(sign in {1, "+"})
+            return
         checkbox = QCheckBox()
         checkbox.setChecked(sign in {1, "+"})
+        checkbox.setText("+" if checkbox.isChecked() else "−")
+        checkbox.toggled.connect(
+            lambda checked: checkbox.setText("+" if checked else "−")
+        )
         checkbox.setToolTip("Toggle the dimension sign")
         checkbox.setStyleSheet(
             "QCheckBox { padding: 2px; }"
-            "QCheckBox::indicator { width: 34px; height: 18px; border-radius: 9px; border: 1px solid #56626D; background: #FF7474; color: white; font-weight: bold; }"
+            "QCheckBox::indicator { width: 18px; height: 18px; border-radius: 9px; border: 1px solid #56626D; background: #FF7474; }"
             "QCheckBox::indicator:checked { background: #67D39A; }"
-            "QCheckBox::indicator:checked::before { content: '+'; }"
-            "QCheckBox::indicator:unchecked::before { content: '-'; }"
         )
         self.table.setCellWidget(row, 4, checkbox)
 

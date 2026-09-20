@@ -51,6 +51,36 @@ QLabel[role="muted"] {{
 QLabel[role="status"] {{
     color: {COLORS['accent']};
 }}
+QLabel[role="heading"] {{
+    font-size: 20px;
+    font-weight: 600;
+}}
+QLabel#brandMark {{
+    color: {COLORS['accent']};
+    font-size: 23px;
+    font-weight: 700;
+    min-height: 48px;
+}}
+QLabel#railCaption {{
+    color: {COLORS['muted']};
+    font-size: 10px;
+    padding: 12px 0;
+}}
+QFrame#inspectorShell, QFrame#panelHeader {{
+    background: {COLORS['panel']};
+}}
+QFrame#panelHeader {{
+    border-bottom: 1px solid {COLORS['border']};
+}}
+QSplitter#workspaceSplitter::handle {{
+    background: {COLORS['window']};
+}}
+QSplitter#workspaceSplitter::handle:hover {{
+    background: {COLORS['accent_border']};
+}}
+QPushButton:focus {{
+    border-color: {COLORS['accent']};
+}}
 QFrame#workspaceRail {{
     background: {COLORS['panel']};
     border: 0;
@@ -73,11 +103,13 @@ QFrame#workspaceRail QPushButton:checked {{
     color: #BFE7FF;
     background: {COLORS['accent_surface']};
     border-color: {COLORS['accent_border']};
+    border-left: 3px solid {COLORS['accent']};
+    font-weight: 600;
 }}
 QTabWidget#inspectorPanel::pane {{
     background: {COLORS['panel']};
     border: 0;
-    border-left: 1px solid {COLORS['border']};
+    border-left: 0;
 }}
 QTabWidget#inspectorPanel QScrollArea,
 QTabWidget#inspectorPanel QScrollArea > QWidget > QWidget {{

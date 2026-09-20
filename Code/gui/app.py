@@ -67,7 +67,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QPushButton, QLabel, QComboBox,
     QHeaderView, QLineEdit,
     QCheckBox, QDoubleSpinBox, QSpinBox,
-    QTabWidget, QFrame, QSizePolicy, QScrollArea, QButtonGroup
+    QTabWidget, QFrame, QSizePolicy, QScrollArea, QButtonGroup, QSplitter
 )
 from PySide6.QtCore import Qt
 
@@ -136,7 +136,6 @@ class TolstackWindow(
         self.sidebar = sidebar
         sidebar.setObjectName("inspectorPanel")
         sidebar.setMinimumWidth(340)
-        sidebar.setMaximumWidth(460)
         sidebar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         sidebar.tabBar().hide()
 
@@ -209,6 +208,12 @@ class TolstackWindow(
         self.table.setHorizontalHeaderLabels(COLUMNS + ["3D Value"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setMinimumSectionSize(50)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setColumnWidth(0, 150)
+        for column in range(1, len(COLUMNS) + 1):
+            self.table.setColumnWidth(column, 78)
         self.STACK_LINK_VALUE_COLUMN = len(COLUMNS)
         stack_layout.addWidget(self.table)
 
@@ -679,14 +684,19 @@ class TolstackWindow(
         gdt_scroll.setFrameShape(QFrame.NoFrame)
         sidebar.addTab(gdt_scroll, "GD&T Position")
 
-        # Workspace rail replaces the always-visible tab strip. Measure is
-        # intentionally contextual and opens automatically from right-click.
+        # Persistent navigation also exposes measurement without requiring
+        # users to discover the viewport context menu first.
         workspace_rail = QFrame()
         workspace_rail.setObjectName("workspaceRail")
-        workspace_rail.setFixedWidth(78)
+        workspace_rail.setFixedWidth(104)
         workspace_rail_layout = QVBoxLayout(workspace_rail)
         workspace_rail_layout.setContentsMargins(6, 8, 6, 8)
         workspace_rail_layout.setSpacing(6)
+        brand = QLabel("TF")
+        brand.setObjectName("brandMark")
+        brand.setAlignment(Qt.AlignCenter)
+        workspace_rail_layout.addWidget(brand)
+        workspace_rail_layout.addSpacing(12)
         self.workspace_button_group = QButtonGroup(self)
         self.workspace_button_group.setExclusive(True)
         self.workspace_buttons = {}
@@ -702,7 +712,7 @@ class TolstackWindow(
         for key, caption in (
             ("inspect", "Inspect"), ("library", "Library"),
             ("stack", "Stack"), ("results", "Results"),
-            ("gdt", "GD&T"), ("eclipse", "Eclipse"),
+            ("measure", "Measure"), ("gdt", "GD&T"), ("eclipse", "Eclipse"),
         ):
             button = QPushButton(caption)
             button.setCheckable(True)
@@ -712,14 +722,48 @@ class TolstackWindow(
             self.workspace_button_group.addButton(button)
             self.workspace_buttons[key] = button
         workspace_rail_layout.addStretch(1)
+        rail_caption = QLabel("TOLFORGE")
+        rail_caption.setObjectName("railCaption")
+        rail_caption.setAlignment(Qt.AlignCenter)
+        workspace_rail_layout.addWidget(rail_caption)
         root_layout.addWidget(workspace_rail, stretch=0)
+
+        self.workspace_titles = {
+            "inspect": ("Feature inspector", "Select geometry to inspect its properties and engineering links."),
+            "library": ("Dimension library", "Reuse dimensions across your tolerance stacks."),
+            "stack": ("Tolerance stack", "Define dimensions, signs, and manufacturing tolerances."),
+            "results": ("Stack analysis", "Choose a method and evaluate your acceptance range."),
+            "measure": ("Measure geometry", "Assign two features using the viewport context menu."),
+            "gdt": ("GD&T position", "Build a datum reference frame and evaluate your pattern."),
+            "eclipse": ("Hole occlusion", "Evaluate light transmission through overlapping holes."),
+        }
+        inspector_shell = QFrame()
+        inspector_shell.setObjectName("inspectorShell")
+        shell_layout = QVBoxLayout(inspector_shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        panel_header = QFrame()
+        panel_header.setObjectName("panelHeader")
+        header_layout = QVBoxLayout(panel_header)
+        header_layout.setContentsMargins(18, 18, 18, 16)
+        self.workspace_title = QLabel()
+        self.workspace_title.setProperty("role", "heading")
+        self.workspace_description = QLabel()
+        self.workspace_description.setWordWrap(True)
+        self.workspace_description.setProperty("role", "muted")
+        header_layout.addWidget(self.workspace_title)
+        header_layout.addWidget(self.workspace_description)
+        shell_layout.addWidget(panel_header)
+        shell_layout.addWidget(sidebar, 1)
 
         # ==================================================================
         # Right/main column: 3D STEP viewport is the main widget, with an
         # always-visible analysis toolbar docked above it and a slim
         # status/legend strip docked below it - mirrors a slicer's plater.
         # ==================================================================
-        viewport_column = QVBoxLayout()
+        viewport_widget = QWidget()
+        viewport_widget.setMinimumWidth(410)
+        viewport_column = QVBoxLayout(viewport_widget)
         viewport_column.setContentsMargins(8, 8, 8, 8)
         viewport_column.setSpacing(6)
 
@@ -769,9 +813,13 @@ class TolstackWindow(
         analysis_settings_layout.addWidget(self.range_max_input, 4, 1)
         results_layout.insertWidget(0, analysis_settings)
 
-        toolbar_layout.addStretch(1)
+        view_controls = QFrame()
+        view_controls.setObjectName("viewControls")
+        view_controls_layout = QHBoxLayout(view_controls)
+        view_controls_layout.setContentsMargins(4, 0, 4, 0)
+        view_controls_layout.setSpacing(8)
 
-        toolbar_layout.addWidget(QLabel("Mesh quality:"))
+        view_controls_layout.addWidget(QLabel("Mesh quality"))
         self.step_deflection_input = QDoubleSpinBox()
         self.step_deflection_input.setRange(0.01, 5.0)
         self.step_deflection_input.setSingleStep(0.05)
@@ -783,9 +831,10 @@ class TolstackWindow(
             "higher = coarser mesh / faster. Raise this for large "
             "assemblies with many parts."
         )
-        toolbar_layout.addWidget(self.step_deflection_input)
+        view_controls_layout.addWidget(self.step_deflection_input)
 
-        toolbar_layout.addWidget(QLabel("Select:"))
+        view_controls_layout.addStretch(1)
+        view_controls_layout.addWidget(QLabel("Select"))
         self.pick_filter_combo = QComboBox()
         self.pick_filter_combo.addItems(["Any", "Vertices", "Edges", "Faces", "Solids"])
         self.pick_filter_combo.setToolTip(
@@ -794,7 +843,7 @@ class TolstackWindow(
             "picking a whole part in an assembly rather than one face."
         )
         self.pick_filter_combo.currentTextChanged.connect(self.set_pick_filter)
-        toolbar_layout.addWidget(self.pick_filter_combo)
+        view_controls_layout.addWidget(self.pick_filter_combo)
 
         load_step_btn = QPushButton("Load STEP")
         load_step_btn.clicked.connect(self.load_step_file)
@@ -802,6 +851,7 @@ class TolstackWindow(
         clear_step_btn = QPushButton("Clear")
         clear_step_btn.clicked.connect(self.clear_step_preview)
         toolbar_layout.addWidget(clear_step_btn)
+        toolbar_layout.addStretch(1)
 
         run_btn = QPushButton("Analyze")
         run_btn.setProperty("role", "primary")
@@ -809,6 +859,7 @@ class TolstackWindow(
         toolbar_layout.addWidget(run_btn)
 
         viewport_column.addWidget(toolbar)
+        viewport_column.addWidget(view_controls)
 
         # --- Main widget: the 3D STEP viewport itself ---
         self.step_preview_container = QWidget()
@@ -832,8 +883,22 @@ class TolstackWindow(
         status_strip_layout.addWidget(self.step_status_label, stretch=1)
         viewport_column.addWidget(status_strip)
 
-        root_layout.addLayout(viewport_column, stretch=1)
-        root_layout.addWidget(sidebar, stretch=0)
+        self.workspace_splitter = QSplitter(Qt.Horizontal)
+        self.workspace_splitter.setObjectName("workspaceSplitter")
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.setHandleWidth(7)
+        self.workspace_splitter.addWidget(viewport_widget)
+        self.workspace_splitter.addWidget(inspector_shell)
+        self.workspace_splitter.setStretchFactor(0, 1)
+        self.workspace_splitter.setStretchFactor(1, 0)
+        self.workspace_splitter.setSizes([740, 450])
+        self.workspace_splitter.setToolTip("Drag the divider to resize the viewport and workspace.")
+        root_layout.addWidget(self.workspace_splitter, stretch=1)
+
+        for page in (inspector_tab, bank_tab, stack_tab, results_tab,
+                     measure_tab, gdt_tab, eclipse_tab):
+            page.layout().setContentsMargins(16, 16, 16, 16)
+            page.layout().setSpacing(10)
 
         # Seed example row + bank so the GUI doesn't start empty
         self._seed_example()
@@ -848,6 +913,9 @@ class TolstackWindow(
         if page is None:
             return
         self.sidebar.setCurrentWidget(page)
+        title, description = self.workspace_titles[name]
+        self.workspace_title.setText(title)
+        self.workspace_description.setText(description)
         button = self.workspace_buttons.get(name)
         if button is not None:
             button.setChecked(True)

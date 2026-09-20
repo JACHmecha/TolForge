@@ -21,8 +21,11 @@ vertex selection.
   measure it, assign datum references, create size/position controls for
   circular edges, or link it to the selected stack term.
 - **Focused workspace rail**: switch between Inspect, Library, Stack, Results,
-  GD&T, and Eclipse while keeping the 3D viewport visible. Analysis settings
+  Measure, GD&T, and Eclipse while keeping the 3D viewport visible. Analysis settings
   live with Results instead of occupying the viewport toolbar.
+- **Resizable workspaces**: drag the divider between the viewport and the
+  workspace to give dimension tables and analysis results more room. Workspace
+  headings explain each tool, and dimension signs have explicit +/− labels.
 
 ## Project structure
 
