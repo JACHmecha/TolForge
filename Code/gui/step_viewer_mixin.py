@@ -79,6 +79,7 @@ class StepViewerMixin:
         """Clear the loaded geometry but keep the 3D viewport itself visible
         and ready - it's initialized once at startup, not recreated here."""
         self._step_load_generation += 1  # invalidate any in-flight background load
+        self._reset_surface_previews()
         self.step_status_label.setText("No STEP file loaded yet.")
         if self._step_preview_renderer is not None:
             scene = self._step_preview_renderer.scene
@@ -89,6 +90,17 @@ class StepViewerMixin:
             QApplication.processEvents()
         else:
             self._show_step_preview_placeholder()
+
+    def _reset_surface_previews(self):
+        """Discard previews and measurement references before replacing geometry."""
+        self._measure_clear_results()
+        self._measure_slot = {"A": None, "B": None}
+        self._measure_update_slot_labels()
+        self._stack_preview_timer.stop()
+        for key in list(self._stack_link_preview_objs):
+            self._stack_link_remove_preview(key)
+        self._entity_by_feature_id = {}
+        self.stack_offset_controls.setEnabled(False)
 
     def _init_step_preview_renderer(self):
         """Create and fully initialize the 3D viewport once, at app startup,
@@ -307,6 +319,7 @@ class StepViewerMixin:
             # widget. Without explicitly clearing it, geometry from a
             # previously-loaded STEP file would keep accumulating invisibly
             # underneath whatever the current widget shows.
+            self._reset_surface_previews()
             for stale_obj in list(scene.objects):
                 scene.remove(stale_obj)
 

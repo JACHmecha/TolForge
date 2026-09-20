@@ -36,11 +36,11 @@ Method:
 
 import numpy as np
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMessageBox, QInputDialog, QMenu, QWidget
+from .offset_preview import offset_layers, replace_preview, refresh_renderer, tolerance_limits
 
-from compas.colors import Color
 
 from tolstack import DimensionTemplate
 
@@ -62,7 +62,12 @@ class MeasurementMixin:
     def _measure_init_state(self):
         self._measure_slot = {"A": None, "B": None}
         self._measure_arm = None  # "A" or "B" while waiting for the next pick
-        self._measure_offset_obj = None  # the translucent preview object, if any
+        self._measure_offset_objs = []
+        self._measure_offset_active = False
+        self._measure_offset_timer = QTimer(self)
+        self._measure_offset_timer.setSingleShot(True)
+        self._measure_offset_timer.setInterval(35)
+        self._measure_offset_timer.timeout.connect(self._measure_update_offset)
         self._measure_last = None  # dict of the most recent computed measurement
 
     def measure_arm_slot_a(self):
@@ -89,6 +94,7 @@ class MeasurementMixin:
         self._measure_clear_results()
 
     def _measure_assign_slot(self, slot: str, info: dict | None):
+        self._measure_clear_offset_preview()
         if info is None:
             self._measure_slot[slot] = None
             self._measure_update_slot_labels()
@@ -513,100 +519,71 @@ class MeasurementMixin:
     # ------------------------------------------------------------------
 
     def show_tolerance_offset(self):
-        """Offset whichever selected entity is a face along the measured
-        (oriented) normal by (nominal - tol_minus) - the worst-case
-        closest approach - and show it as a translucent surface: green
-        if that worst case still clears the other entity, red if it
-        would interfere.
-        """
-        if self._measure_last is None or self._measure_last["reference_normal"] is None:
-            QMessageBox.warning(
-                self, "No measurement",
-                "Measure two entities (at least one a face) first."
-            )
+        """Start a live, nominal-relative preview of the selected face."""
+        if self._step_preview_renderer is None:
+            QMessageBox.warning(self, "No viewport", "Load geometry in the 3D viewport first.")
             return
+        if self._measure_last is None or not self._measure_last.get("reference_is_face"):
+            QMessageBox.warning(self, "No measurement", "Measure two entities, including a face, first.")
+            return
+        self._measure_offset_active = True
+        self._measure_update_offset()
 
-        face_info = None
-        for slot in ("A", "B"):
+    def _measure_schedule_offset(self):
+        if self._measure_offset_active and not self._measure_offset_timer.isActive():
+            self._measure_offset_timer.start()
+
+    def _measure_update_offset(self):
+        if not self._measure_offset_active or self._measure_last is None:
+            return
+        try:
+            lower, upper = tolerance_limits(
+                self.measure_tol_plus_input.text() or 0,
+                self.measure_tol_minus_input.text() or 0,
+            )
+            controls = self.measure_offset_controls
+            units = self.project.units.length
+            controls.configure(upper, -lower, units=units)
+            slot = "A" if self._measure_slot["A"]["type"] == "face" else "B"
             info = self._measure_slot[slot]
-            if info is not None and info["type"] == "face":
-                face_info = info
-                break
-        if face_info is None or face_info.get("mesh") is None:
-            QMessageBox.warning(
-                self, "No face selected",
-                "The tolerance offset preview requires a face (not just an edge/vertex) in A or B."
+            if info.get("mesh") is None:
+                raise ValueError("Select a face with a preview mesh.")
+            # Positive deviation increases the nominal separation. The source
+            # face in B must move opposite to a source face in A.
+            normal = np.asarray(self._measure_last["reference_normal"], dtype=float)
+            normal = normal * (-1 if slot == "A" else 1) * controls.direction
+            value = controls.distance.value()
+            layers = offset_layers(info, value, lower, upper, normal, controls.limits.isChecked())
+            self._measure_offset_objs = replace_preview(
+                self._step_preview_renderer, self._measure_offset_objs, info, layers,
             )
-            return
-
-        try:
-            tol_plus = float(self.measure_tol_plus_input.text() or 0.0)
-            tol_minus = float(self.measure_tol_minus_input.text() or 0.0)
-        except ValueError:
-            QMessageBox.warning(self, "Invalid tolerance", "Tol + / Tol - must be numbers.")
-            return
-
-        nominal = self._measure_last["normal_distance"]
-        worst_case = nominal - tol_minus
-        best_case = nominal + tol_plus
-        normal = self._measure_last["reference_normal"]
-
-        # reference_normal already points from A's centroid toward B's
-        # (set in _measure_compute), so translating the face along it by
-        # worst_case consistently moves it *towards* the other entity
-        # regardless of which slot (A or B) actually holds the face.
-        offset_vector = normal * worst_case
-
-        self._measure_clear_offset_preview()
-
-        try:
-            source_mesh = face_info["mesh"]
-            offset_mesh = source_mesh.copy()
-            base_points = np.asarray(face_info["points"], dtype=float)
-            new_points = base_points + offset_vector
-            for vkey, new_xyz in zip(offset_mesh.vertices(), new_points):
-                offset_mesh.vertex_attributes(vkey, "xyz", new_xyz.tolist())
-
-            color = Color.from_hex("#4caf50") if worst_case > 0 else Color.from_hex("#f44336")
-            scene = self._step_preview_renderer.scene
-            try:
-                obj = scene.add(
-                    offset_mesh, show_faces=True, show_lines=False,
-                    facecolor=color, opacity=0.35,
-                )
-            except TypeError:
-                # Older compas_viewer without an `opacity` kwarg - still
-                # show the offset, just opaque rather than translucent.
-                obj = scene.add(offset_mesh, show_faces=True, show_lines=False, facecolor=color)
-            self._measure_offset_obj = obj
-
-            self._step_preview_renderer.makeCurrent()
-            self._step_preview_renderer.rebuild_buffers()
-            self._step_preview_renderer.doneCurrent()
-            self._step_preview_renderer.update()
-
-            verdict = "CLEARANCE" if worst_case > 0 else "INTERFERENCE"
+            controls.title.setText(f"Surface offset · Face {slot}")
             self.step_status_label.setText(
-                f"Tolerance offset preview: nominal {nominal:.4f} mm, "
-                f"worst-case {worst_case:.4f} mm, best-case {best_case:.4f} mm -> {verdict}"
+                f"Face {slot}: offset {value * controls.direction:+.4f} {units} from nominal. "
+                "Tolerance surfaces are a directional preview, not a collision check."
             )
-        except Exception as exc:  # pragma: no cover - runtime environment specific
-            QMessageBox.warning(self, "Could not build offset preview", str(exc))
+        except (ValueError, TypeError) as exc:
+            self._measure_clear_offset_preview()
+            # Keep listening while the user edits an incomplete numeric value.
+            self._measure_offset_active = True
+            self.step_status_label.setText(f"Offset preview: {exc}")
+        except Exception as exc:
+            self._measure_clear_offset_preview()
+            self.step_status_label.setText(f"Could not build offset preview: {exc}")
 
     def clear_tolerance_offset(self):
         self._measure_clear_offset_preview()
+        self.step_status_label.setText("Surface offset preview cleared.")
 
     def _measure_clear_offset_preview(self):
-        if self._measure_offset_obj is not None and self._step_preview_renderer is not None:
-            try:
-                self._step_preview_renderer.scene.remove(self._measure_offset_obj)
-                self._step_preview_renderer.makeCurrent()
-                self._step_preview_renderer.rebuild_buffers()
-                self._step_preview_renderer.doneCurrent()
-                self._step_preview_renderer.update()
-            except Exception:
-                pass
-            self._measure_offset_obj = None
+        self._measure_offset_timer.stop()
+        self._measure_offset_active = False
+        renderer = self._step_preview_renderer
+        if renderer is not None and self._measure_offset_objs:
+            for obj in self._measure_offset_objs:
+                renderer.scene.remove(obj)
+            refresh_renderer(renderer)
+        self._measure_offset_objs = []
 
     # ------------------------------------------------------------------
     # Add to dimension bank

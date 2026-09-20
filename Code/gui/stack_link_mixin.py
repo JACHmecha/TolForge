@@ -45,12 +45,13 @@ from PySide6.QtWidgets import (
     QMessageBox, QInputDialog, QSlider, QWidget, QHBoxLayout, QLabel,
     QTableWidgetItem,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
-from compas.colors import Color
 from tolstack import Stack
+from .offset_preview import tolerance_limits, surface_normal, offset_layers, replace_preview, refresh_renderer
 
 LINK_MODES = ("diametral", "positional", "normal_offset")
+LINK_LABELS = ("Diameter", "Position", "Surface offset")
 SLIDER_STEPS = 1000  # QSlider is integer-only; this is the resolution mapped onto [nominal-tol_minus, nominal+tol_plus]
 
 
@@ -67,6 +68,47 @@ class StackLinkMixin:
         self._stack_link_arm_row = None  # table row currently waiting for a pick
         self._stack_link_pending_mode = None
         self._stack_link_preview_objs = {}  # feature_key -> scene object currently shown for it
+        self._stack_preview_timer = QTimer(self)
+        self._stack_preview_timer.setSingleShot(True)
+        self._stack_preview_timer.setInterval(35)
+        self._stack_preview_timer.timeout.connect(self._stack_link_rebuild_preview)
+
+    def _stack_link_schedule_preview(self, *_args):
+        if not self._stack_preview_timer.isActive():
+            self._stack_preview_timer.start()
+
+    def _stack_link_sync_controls(self, *_args):
+        controls = self.stack_offset_controls
+        row = self.table.currentRow()
+        try:
+            item = self.table.item(row, 0)
+            link = item.data(self.LINK_ROLE) if item is not None else None
+            container = self.table.cellWidget(row, self.STACK_LINK_VALUE_COLUMN)
+            if not link or link.get("mode") != "normal_offset" or container is None:
+                raise ValueError("Select a row linked in normal_offset mode.")
+            nominal = float(self.table.item(row, 1).text())
+            controls.configure(
+                float(self.table.item(row, 2).text()), float(self.table.item(row, 3).text()),
+                self._stack_link_row_current_value(row) - nominal, self.project.units.length,
+            )
+            controls.reverse.blockSignals(True)
+            controls.reverse.setChecked(bool(container.property("reverse_offset")))
+            controls.reverse.blockSignals(False)
+            controls.title.setText(f"Surface offset · {item.text()}")
+            controls.setEnabled(True)
+        except (ValueError, AttributeError):
+            controls.setEnabled(False)
+            controls.title.setText("Surface offset · select a linked row")
+
+    def _stack_offset_controls_changed(self):
+        row = self.table.currentRow()
+        container = self.table.cellWidget(row, self.STACK_LINK_VALUE_COLUMN)
+        if container is None:
+            return
+        nominal = float(self.table.item(row, 1).text())
+        container.setProperty("reverse_offset", self.stack_offset_controls.reverse.isChecked())
+        self._stack_link_set_row_value(row, nominal + self.stack_offset_controls.distance.value())
+        self._stack_link_schedule_preview()
 
     # ------------------------------------------------------------------
     # Linking a row to a feature
@@ -80,10 +122,11 @@ class StackLinkMixin:
 
         mode, ok = QInputDialog.getItem(
             self, "Link mode", "How should this dimension drive the 3D preview?",
-            LINK_MODES, 0, False,
+            LINK_LABELS, 0, False,
         )
         if not ok:
             return
+        mode = LINK_MODES[LINK_LABELS.index(mode)]
 
         self._stack_link_arm_row = row
         self._stack_link_pending_mode = mode
@@ -203,33 +246,41 @@ class StackLinkMixin:
         self._stack_link_install_slider(row)
 
     def _stack_link_install_slider(self, row: int):
+        self.table.setColumnWidth(self.STACK_LINK_VALUE_COLUMN,
+                                  max(210, self.table.columnWidth(self.STACK_LINK_VALUE_COLUMN)))
         slider = QSlider(Qt.Horizontal)
         slider.setRange(0, SLIDER_STEPS)
-        slider.setValue(SLIDER_STEPS // 2)  # starts at nominal
 
         value_label = QLabel("nominal")
         value_label.setMinimumWidth(60)
         value_label.setStyleSheet("font-size: 10px;")
 
         container = QWidget()
+        container.setProperty("preview_value", float(self.table.item(row, 1).text()))
         layout = QHBoxLayout(container)
         layout.setContentsMargins(2, 0, 2, 0)
         layout.addWidget(slider, stretch=1)
         layout.addWidget(value_label)
 
-        slider.valueChanged.connect(lambda _val, r=row, lbl=value_label: self._stack_link_slider_value_changed(r, lbl))
-        slider.sliderReleased.connect(self._stack_link_rebuild_preview)
+        # Resolve the item's current row so deleting an earlier row doesn't
+        # leave this slider editing the wrong feature.
+        item = self.table.item(row, 0)
+        slider.valueChanged.connect(lambda _val, item=item, lbl=value_label: self._stack_link_slider_value_changed(self.table.row(item), lbl))
 
         self.table.setCellWidget(row, self.STACK_LINK_VALUE_COLUMN, container)
-        self._stack_link_slider_value_changed(row, value_label)  # set the initial label text
+        self._stack_link_set_row_value(row, float(self.table.item(row, 1).text()))
 
     def _stack_link_slider_value_changed(self, row: int, value_label: QLabel):
         try:
+            container = self.table.cellWidget(row, self.STACK_LINK_VALUE_COLUMN)
+            container.setProperty("preview_value", None)
             value = self._stack_link_row_current_value(row)
-        except ValueError:
+        except (ValueError, AttributeError):
             value_label.setText("?")
             return
         value_label.setText(f"{value:.4f}")
+        self._stack_link_sync_controls()
+        self._stack_link_schedule_preview()
 
     def _stack_link_row_current_value(self, row: int) -> float:
         """The dimension's value implied by its slider's current
@@ -237,9 +288,15 @@ class StackLinkMixin:
         nominal = float(self.table.item(row, 1).text())
         tol_plus = float(self.table.item(row, 2).text())
         tol_minus = float(self.table.item(row, 3).text())
+        tolerance_limits(tol_plus, tol_minus)
+        if not np.isfinite(nominal):
+            raise ValueError("Nominal must be finite.")
         container = self.table.cellWidget(row, self.STACK_LINK_VALUE_COLUMN)
         if container is None:
             return nominal
+        precise_value = container.property("preview_value")
+        if precise_value is not None:
+            return min(max(float(precise_value), nominal - tol_minus), nominal + tol_plus)
         slider = container.findChild(QSlider)
         if slider is None:
             return nominal
@@ -254,6 +311,9 @@ class StackLinkMixin:
         nominal = float(self.table.item(row, 1).text())
         tol_plus = float(self.table.item(row, 2).text())
         tol_minus = float(self.table.item(row, 3).text())
+        tolerance_limits(tol_plus, tol_minus)
+        if not np.isfinite([nominal, value]).all():
+            raise ValueError("Nominal and preview value must be finite.")
         span = tol_plus + tol_minus
         fraction = 0.5 if span <= 0 else (value - (nominal - tol_minus)) / span
         fraction = min(max(fraction, 0.0), 1.0)
@@ -261,6 +321,8 @@ class StackLinkMixin:
         container = self.table.cellWidget(row, self.STACK_LINK_VALUE_COLUMN)
         if container is None:
             return
+        value = min(max(value, nominal - tol_minus), nominal + tol_plus)
+        container.setProperty("preview_value", value)
         slider = container.findChild(QSlider)
         if slider is None:
             return
@@ -317,19 +379,43 @@ class StackLinkMixin:
         self._stack_link_rebuild_preview()
 
     def _stack_link_rebuild_preview(self):
+        self._stack_preview_timer.stop()
+        self._stack_link_sync_controls()
+        if self._step_preview_renderer is None:
+            return
         entries = self._stack_link_read_all()
+        valid_rows = {row for row, *_ in entries}
+        invalid_keys = set()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            link = item.data(self.LINK_ROLE) if item is not None else None
+            if link and row not in valid_rows:
+                invalid_keys.add(self._stack_link_feature_key(link))
+        if invalid_keys:
+            self.step_status_label.setText("Offset preview paused for features with invalid nominal or tolerance values.")
 
         # Group by which underlying feature each link affects, so several
         # dimensions on one hole (diameter + position) combine into a
         # single preview instead of overwriting each other.
         groups = {}
         for row, link, value, nominal in entries:
+            self._stack_link_set_row_value(row, value)
             info = self._stack_link_find_entity_info(link)
             if info is None:
                 continue
             key = self._stack_link_feature_key(link)
-            groups.setdefault(key, {"info": info, "deltas": []})
-            groups[key]["deltas"].append((link["mode"], value - nominal))
+            if key in invalid_keys:
+                continue
+            group = groups.setdefault(key, {"info": info, "deltas": [], "lower": 0.0, "upper": 0.0, "has_offset": False})
+            direction = 1
+            if link["mode"] == "normal_offset":
+                container = self.table.cellWidget(row, self.STACK_LINK_VALUE_COLUMN)
+                direction = -1 if container is not None and container.property("reverse_offset") else 1
+                lower, upper = tolerance_limits(float(self.table.item(row, 2).text()), float(self.table.item(row, 3).text()))
+                group["lower"] += min(lower * direction, upper * direction)
+                group["upper"] += max(lower * direction, upper * direction)
+                group["has_offset"] = True
+            group["deltas"].append((link["mode"], (value - nominal) * direction))
 
         # Clear previews for any feature that no longer has a link (row
         # unlinked, or removed).
@@ -338,9 +424,14 @@ class StackLinkMixin:
                 self._stack_link_remove_preview(key)
 
         for key, group in groups.items():
-            self._stack_link_build_feature_preview(key, group["info"], group["deltas"])
+            try:
+                bounds = (group["lower"], group["upper"]) if group["has_offset"] else None
+                self._stack_link_build_feature_preview(key, group["info"], group["deltas"], bounds)
+            except (ValueError, TypeError) as exc:
+                self._stack_link_remove_preview(key)
+                self.step_status_label.setText(f"Surface offset: {exc}")
 
-    def _stack_link_build_feature_preview(self, key: tuple, info: dict, deltas: list):
+    def _stack_link_build_feature_preview(self, key: tuple, info: dict, deltas: list, bounds=None):
         circle = info.get("circle")
         translation = np.zeros(3)
         radius_delta = 0.0
@@ -351,17 +442,9 @@ class StackLinkMixin:
             elif mode == "positional" and circle is not None:
                 translation = translation + circle["u_axis"] * delta
             elif mode == "normal_offset":
-                normal = circle["normal"] if circle is not None else None
-                if normal is None:
-                    # Face without a circle fit - fall back to its own
-                    # best-fit plane normal (same source _fit_normal_or_direction
-                    # would use), computed once here rather than caching a
-                    # second fit type on every face.
-                    centroid, normal = self._fit_normal_or_direction(
-                        np.asarray(info["points"], dtype=float), "face"
-                    )
-                if normal is not None:
-                    translation = translation + normal * delta
+                # All normal motion and its limits are applied by the shared
+                # nominal-relative surface path after diameter/position changes.
+                pass
 
         base_points = np.asarray(info["points"], dtype=float)
         if radius_delta != 0.0 and circle is not None:
@@ -381,41 +464,28 @@ class StackLinkMixin:
 
         new_points = new_points + translation
 
-        self._stack_link_remove_preview(key)
-
-        color = Color.from_hex("#f58518")  # distinct from the Measure tab's green/red offset preview
-        scene = self._step_preview_renderer.scene
-
         try:
-            if info["type"] == "face" and info.get("mesh") is not None:
-                offset_mesh = info["mesh"].copy()
-                for vkey, new_xyz in zip(offset_mesh.vertices(), new_points):
-                    offset_mesh.vertex_attributes(vkey, "xyz", new_xyz.tolist())
-                try:
-                    obj = scene.add(offset_mesh, show_faces=True, show_lines=False, facecolor=color, opacity=0.4)
-                except TypeError:
-                    obj = scene.add(offset_mesh, show_faces=True, show_lines=False, facecolor=color)
+            if bounds is not None:
+                preview_info = dict(info, points=new_points)
+                normal = surface_normal(info)
+                current = sum(delta for mode, delta in deltas if mode == "normal_offset")
+                layers = offset_layers(preview_info, current, *bounds, normal,
+                                       self.stack_offset_controls.limits.isChecked())
             else:
-                from compas.geometry import Polyline
-                offset_polyline = Polyline(new_points.tolist())
-                obj = scene.add(offset_polyline, linecolor=color, linewidth=3)
-
-            self._stack_link_preview_objs[key] = obj
-            self._step_preview_renderer.makeCurrent()
-            self._step_preview_renderer.rebuild_buffers()
-            self._step_preview_renderer.doneCurrent()
-            self._step_preview_renderer.update()
-        except Exception as exc:  # pragma: no cover - runtime environment specific
+                layers = [("Current offset", new_points, "#FFAE5C", False)]
+            self._stack_link_preview_objs[key] = replace_preview(
+                self._step_preview_renderer, self._stack_link_preview_objs.get(key, []), info, layers,
+            )
+        except Exception as exc:
+            self._stack_link_remove_preview(key)
             self.step_status_label.setText(f"Could not build the stack-link preview: {exc}")
 
     def _stack_link_remove_preview(self, key: tuple):
-        obj = self._stack_link_preview_objs.pop(key, None)
-        if obj is not None and self._step_preview_renderer is not None:
-            try:
+        objects = self._stack_link_preview_objs.pop(key, [])
+        if objects and self._step_preview_renderer is not None:
+            for obj in objects:
                 self._step_preview_renderer.scene.remove(obj)
-                self._step_preview_renderer.update()
-            except Exception:
-                pass
+            refresh_renderer(self._step_preview_renderer)
 
     # ------------------------------------------------------------------
     # Snap to worst-case / Monte Carlo extreme

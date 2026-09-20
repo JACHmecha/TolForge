@@ -276,6 +276,25 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
 QCheckBox {{
     spacing: 7px;
 }}
+QSlider::groove:horizontal {{
+    height: 4px;
+    background: {COLORS['border']};
+    border-radius: 2px;
+}}
+QSlider::sub-page:horizontal {{
+    background: {COLORS['accent_border']};
+    border-radius: 2px;
+}}
+QSlider::handle:horizontal {{
+    width: 14px;
+    margin: -5px 0;
+    background: {COLORS['accent']};
+    border: 1px solid {COLORS['accent_hover']};
+    border-radius: 7px;
+}}
+QSlider::handle:horizontal:disabled {{
+    background: {COLORS['disabled']};
+}}
 QCheckBox::indicator {{
     width: 15px;
     height: 15px;

@@ -26,6 +26,17 @@ vertex selection.
 - **Resizable workspaces**: drag the divider between the viewport and the
   workspace to give dimension tables and analysis results more room. Workspace
   headings explain each tool, and dimension signs have explicit +/− labels.
+- **Live surface offsets**: Measure and surface-linked stack rows share a
+  nominal-relative slider, numeric offset, Reset, Reverse direction, and
+  Show limits controls. Orange shows the current surface; blue and violet
+  show the lower and upper limits. In Measure, assign A/B, enter tolerances,
+  then select **Show live offset**. In Stack, link a row using **Surface
+  offset** and select that row to use the controls. Several normal offsets
+  on one feature combine; diameter/position changes remain at their current
+  values while these normal limits are shown. Direction reversals are
+  session-only preview settings and do not change stack signs or calculations.
+  Faces translate along a fitted normal; this is not a curved-surface
+  inflation operation or a collision/clearance certification.
 
 ## Project structure
 

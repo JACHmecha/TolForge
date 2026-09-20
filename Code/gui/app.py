@@ -86,6 +86,7 @@ from gui.gdt_mixin import GdtMixin, PATTERN_COLUMNS
 from gui.stack_link_mixin import StackLinkMixin
 from gui.project_mixin import ProjectMixin
 from gui.theme import apply_application_palette, apply_window_theme, style_figure
+from gui.offset_preview import OffsetControls
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "+/-", "Cpk"]
 
@@ -255,6 +256,23 @@ class TolstackWindow(
         link_row.addWidget(unlink_btn)
         stack_layout.addLayout(link_row)
 
+        self.stack_offset_controls = OffsetControls()
+        self.stack_offset_controls.setEnabled(False)
+        self.stack_offset_controls.title.setText("Surface offset · select a linked row")
+        self.stack_offset_controls.changed.connect(self._stack_offset_controls_changed)
+        stack_layout.addWidget(self.stack_offset_controls)
+        offset_note = QLabel(
+            "Select a surface-offset row to adjust it. Limits combine normal offsets "
+            "on the same feature; other link modes stay at their current values. "
+            "Direction is a preview setting for this session."
+        )
+        offset_note.setWordWrap(True)
+        offset_note.setProperty("role", "muted")
+        stack_layout.addWidget(offset_note)
+        self.table.currentCellChanged.connect(self._stack_link_sync_controls)
+        self.table.itemChanged.connect(self._stack_link_schedule_preview)
+        self.table.model().rowsRemoved.connect(self._stack_link_schedule_preview)
+
         snap_row1 = QHBoxLayout()
         snap_worst_upper_btn = QPushButton("Snap: Worst \u2191")
         snap_worst_upper_btn.clicked.connect(self.snap_to_worst_case_upper)
@@ -384,8 +402,21 @@ class TolstackWindow(
         tol_row.addStretch(1)
         measure_layout.addLayout(tol_row)
 
+        self.measure_offset_controls = OffsetControls()
+        self.measure_offset_controls.changed.connect(self._measure_schedule_offset)
+        self.measure_tol_plus_input.textChanged.connect(self._measure_schedule_offset)
+        self.measure_tol_minus_input.textChanged.connect(self._measure_schedule_offset)
+        measure_layout.addWidget(self.measure_offset_controls)
+        offset_hint = QLabel(
+            "Positive offset increases separation; reverse flips the preview. "
+            "Faces translate along a fitted normal. Curved faces are not inflated."
+        )
+        offset_hint.setWordWrap(True)
+        offset_hint.setProperty("role", "muted")
+        measure_layout.addWidget(offset_hint)
+
         offset_row = QHBoxLayout()
-        show_offset_btn = QPushButton("Show tolerance offset")
+        show_offset_btn = QPushButton("Show live offset")
         show_offset_btn.clicked.connect(self.show_tolerance_offset)
         clear_offset_btn = QPushButton("Clear offset")
         clear_offset_btn.clicked.connect(self.clear_tolerance_offset)
@@ -900,6 +931,19 @@ class TolstackWindow(
             page.layout().setContentsMargins(16, 16, 16, 16)
             page.layout().setSpacing(10)
 
+        # Keep the workspace page identities stable for navigation while
+        # allowing the longer measurement/stack tools to fit smaller windows.
+        for page in (stack_tab, measure_tab):
+            content = QWidget()
+            content.setLayout(page.layout())
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(content)
+            wrapper = QVBoxLayout(page)
+            wrapper.setContentsMargins(0, 0, 0, 0)
+            wrapper.addWidget(scroll)
+        self.table.setMinimumHeight(220)
+
         # Seed example row + bank so the GUI doesn't start empty
         self._seed_example()
         self._seed_bank()
@@ -949,6 +993,8 @@ class TolstackWindow(
         )
 
     def closeEvent(self, event):
+        self._measure_offset_timer.stop()
+        self._stack_preview_timer.stop()
         # Without this, closing the window while a large-assembly STEP
         # load is still running on its background QThread prints Qt's
         # "QThread: Destroyed while thread is still running" warning (and
