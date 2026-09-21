@@ -37,6 +37,13 @@ vertex selection.
   session-only preview settings and do not change stack signs or calculations.
   Faces translate along a fitted normal; this is not a curved-surface
   inflation operation or a collision/clearance certification.
+- **Datum inspection graphics**: assign A (primary), B (secondary), and C
+  (tertiary) from the feature context menu or GD&T panel to color their faces
+  and show camera-facing labels. **Build datum reference frame** displays the
+  calculated origin and labeled X/Y/Z axes. The origin label is local zero;
+  the panel reports its model coordinates. Visibility toggles and marker size
+  controls are in the GD&T panel. Reassigning or clearing a datum invalidates
+  the old frame; saved datum assignments are restored with their geometry.
 
 ## Project structure
 

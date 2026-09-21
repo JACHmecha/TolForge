@@ -150,7 +150,8 @@ class MeasurementMixin:
 
             datum_menu = menu.addMenu("Set as datum")
             for slot in ("Primary", "Secondary", "Tertiary"):
-                datum_action = QAction(slot, datum_menu)
+                letter = {"Primary": "A", "Secondary": "B", "Tertiary": "C"}[slot]
+                datum_action = QAction(f"{letter} · {slot}", datum_menu)
                 datum_action.triggered.connect(
                     lambda checked=False, slot=slot, info=info: self._set_datum_from_info(slot, info)
                 )

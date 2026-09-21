@@ -80,6 +80,7 @@ class ProjectMixin:
             QMessageBox.warning(self, "Could not open project", str(exc))
             return
 
+        self.clear_step_preview()
         self.project = project
         self._project_path = path
         self._active_part_id = next(iter(project.parts), None)
@@ -364,8 +365,11 @@ class ProjectMixin:
         self._active_datum_system_id = system.id
 
     def _project_restore_datums(self):
+        self._current_drf = None
+        self._datum_slot = {"Primary": None, "Secondary": None, "Tertiary": None}
         system = self.project.datum_systems.get(self._active_datum_system_id)
         if system is None:
+            self._update_datum_labels()
             return
         slots = ("Primary", "Secondary", "Tertiary")
         for slot, datum_id in zip(slots, system.datum_reference_ids):

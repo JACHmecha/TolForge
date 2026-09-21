@@ -67,6 +67,25 @@ try:
             # picked SceneObject (or None if empty space was clicked) when
             # a left-click (not a left-drag/rotate) is released.
             self.on_pick = None
+            self.datum_inspection_objects = []
+
+        def read_instance_color(self, box):
+            """Inspection annotations must not intercept geometry picking."""
+            from OpenGL import GL
+            self.makeCurrent()
+            clear_color = GL.glGetFloatv(GL.GL_COLOR_CLEAR_VALUE)
+            saved = [(obj, obj.show) for obj in self.datum_inspection_objects]
+            try:
+                for obj, _visible in saved:
+                    obj.show = False
+                return super().read_instance_color(box)
+            finally:
+                for obj, visible in saved:
+                    obj.show = visible
+                # COMPAS clears the pick buffer to black; keep that temporary
+                # state from changing the visible viewport background.
+                GL.glClearColor(*clear_color)
+                self.doneCurrent()
 
         def mousePressEvent(self, event):
             self._drag_button = event.button()

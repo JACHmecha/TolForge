@@ -93,6 +93,7 @@ class StepViewerMixin:
 
     def _reset_surface_previews(self):
         """Discard previews and measurement references before replacing geometry."""
+        self._reset_datum_inspection()
         self._measure_clear_results()
         self._measure_slot = {"A": None, "B": None}
         self._measure_update_slot_labels()

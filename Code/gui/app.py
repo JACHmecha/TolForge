@@ -87,6 +87,7 @@ from gui.stack_link_mixin import StackLinkMixin
 from gui.project_mixin import ProjectMixin
 from gui.theme import apply_application_palette, apply_window_theme, style_figure
 from gui.offset_preview import OffsetControls
+from gui.datum_inspection import DATUM_STYLES
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "+/-", "Cpk"]
 
@@ -158,6 +159,10 @@ class TolstackWindow(
         self.selection_link_label = QLabel("Persistent link: —")
         self.selection_link_label.setWordWrap(True)
         inspector_layout.addWidget(self.selection_link_label)
+        self.selection_datum_label = QLabel("Datum: —")
+        self.selection_datum_label.setProperty("role", "status")
+        self.selection_datum_label.setWordWrap(True)
+        inspector_layout.addWidget(self.selection_datum_label)
         inspector_hint = QLabel(
             "Right-click the selected feature to measure it, assign a datum, "
             "add it to a position pattern, or link it to a tolerance stack."
@@ -582,8 +587,13 @@ class TolstackWindow(
         ]:
             row = QHBoxLayout()
             label = QLabel(f"{slot_name}: (none)")
+            letter, datum_color = DATUM_STYLES[slot_name]
+            label.setWordWrap(True)
+            label.setStyleSheet(f"color: {datum_color};")
+            label.setText(f"{letter} · {slot_name}: (none)")
             self.datum_slot_labels[slot_name] = label
-            pick_btn = QPushButton(f"Pick {slot_name}")
+            pick_btn = QPushButton(f"Pick {letter}")
+            pick_btn.setToolTip(f"Assign datum {letter} ({slot_name.lower()})")
             pick_btn.clicked.connect(arm_fn)
             clear_btn = QPushButton("Clear")
             clear_btn.clicked.connect(clear_fn)
@@ -600,6 +610,28 @@ class TolstackWindow(
         self.drf_status_label.setWordWrap(True)
         self.drf_status_label.setProperty("role", "muted")
         datum_box_layout.addWidget(self.drf_status_label)
+        inspection_options = QHBoxLayout()
+        self.show_datum_faces = QCheckBox("Show A / B / C")
+        self.show_datum_faces.setChecked(True)
+        self.show_datum_frame = QCheckBox("Show origin + axes")
+        self.show_datum_frame.setChecked(True)
+        for checkbox in (self.show_datum_faces, self.show_datum_frame):
+            checkbox.toggled.connect(self._refresh_datum_inspection)
+            inspection_options.addWidget(checkbox)
+        datum_box_layout.addLayout(inspection_options)
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("Marker size"))
+        self.datum_axis_scale = QSpinBox()
+        self.datum_axis_scale.setRange(25, 400)
+        self.datum_axis_scale.setValue(100)
+        self.datum_axis_scale.setSuffix(" %")
+        self.datum_axis_scale.valueChanged.connect(self._refresh_datum_inspection)
+        scale_row.addWidget(self.datum_axis_scale)
+        datum_box_layout.addLayout(scale_row)
+        datum_legend = QLabel("A: primary · B: secondary · C: tertiary\nAxes: X red · Y green · Z blue")
+        datum_legend.setWordWrap(True)
+        datum_legend.setProperty("role", "muted")
+        datum_box_layout.addWidget(datum_legend)
         gdt_layout.addWidget(datum_box)
 
         gdt_layout.addSpacing(8)
@@ -969,6 +1001,8 @@ class TolstackWindow(
         self._show_workspace("results")
 
     def _update_selection_inspector(self, info: dict | None):
+        self._inspected_feature_id = info.get("feature_id") if info else None
+        self._update_inspected_datum_label()
         if info is None:
             self.selection_name_label.setText("No selection")
             self.selection_type_label.setText("Select a feature in the viewport.")

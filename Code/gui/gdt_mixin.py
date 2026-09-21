@@ -19,6 +19,7 @@ from tolstack.gdt import (
     evaluate_pattern_nominal, run_pattern_monte_carlo, virtual_condition,
 )
 from gui.theme import COLORS, style_axes
+from gui.datum_inspection import DatumInspectionMixin, DATUM_STYLES
 
 # Column layout for self.pattern_table - kept short since this table lives
 # in a ~350-450px sidebar; the full meaning of each is in the tab's own
@@ -29,7 +30,7 @@ PATTERN_COLUMNS = [
 ]
 
 
-class GdtMixin:
+class GdtMixin(DatumInspectionMixin):
     """Expects the host class (TolstackWindow) to provide, from its own
     __init__: self._step_entity_info, self.step_status_label, plus the
     GD&T-tab widgets built in app.py: self.datum_slot_labels (dict for
@@ -47,6 +48,8 @@ class GdtMixin:
         self._datum_arm = None
         self._current_drf = None
         self._pattern_arm = False
+        self._datum_visual_objects = []
+        self._datum_original_colors = []
 
     # ------------------------------------------------------------------
     # Datum picking
@@ -79,6 +82,7 @@ class GdtMixin:
     def _datum_clear_slot(self, slot: str):
         self._datum_slot[slot] = None
         self._current_drf = None
+        self._pattern_arm = False
         self._update_datum_labels()
         self.drf_status_label.setText("Datum reference frame not built yet.")
 
@@ -123,6 +127,9 @@ class GdtMixin:
             "point": point, "direction": direction, "description": description,
             "feature_id": feature_id,
         }
+        self._current_drf = None
+        self._pattern_arm = False
+        self.drf_status_label.setText("Datum assignment changed. Rebuild the reference frame to update its origin and axes.")
         if hasattr(self, "_update_selection_inspector"):
             self._update_selection_inspector(info)
         self._update_datum_labels()
@@ -154,10 +161,15 @@ class GdtMixin:
     def _update_datum_labels(self):
         for slot, label_widget in self.datum_slot_labels.items():
             entry = self._datum_slot[slot]
-            label_widget.setText(f"{slot}: (none)" if entry is None else f"{slot}: {entry['description']}")
+            letter, _color = DATUM_STYLES[slot]
+            label_widget.setText(f"{letter} · {slot}: (none)" if entry is None else f"{letter} · {slot}: {entry['description']}")
+        self._refresh_datum_inspection()
+        self._update_inspected_datum_label()
 
     def build_datum_frame(self):
+        self._current_drf = None
         if any(self._datum_slot[s] is None for s in ("Primary", "Secondary", "Tertiary")):
+            self._refresh_datum_inspection()
             QMessageBox.warning(self, "Missing datums", "Pick a Primary, Secondary, and Tertiary datum first.")
             return
 
@@ -170,13 +182,17 @@ class GdtMixin:
             tertiary = to_datum_feature(self._datum_slot["Tertiary"])
             self._current_drf = build_datum_reference_frame(primary, secondary, tertiary)
         except ValueError as exc:
+            self.drf_status_label.setText("Datum frame could not be built. Check datum assignments.")
+            self._refresh_datum_inspection()
             QMessageBox.warning(self, "Could not build datum frame", str(exc))
             return
 
         origin = self._current_drf.origin
+        self._refresh_datum_inspection()
         self.drf_status_label.setText(
-            f"DRF built. Origin: ({origin[0]:.4f}, {origin[1]:.4f}, {origin[2]:.4f})  "
-            "Ready to pick pattern features."
+            f"DRF origin in model coordinates ({self.project.units.length}): "
+            f"({origin[0]:.4f}, {origin[1]:.4f}, {origin[2]:.4f}). "
+            "O marks local (0, 0, 0). Ready to pick pattern features."
         )
 
     # ------------------------------------------------------------------
