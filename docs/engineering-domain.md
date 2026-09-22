@@ -1,61 +1,82 @@
 # Engineering domain
 
-TolForge project files use `tolstack.project.Project` as their source of truth.
-Qt widgets, renderer objects, OpenCASCADE wrappers, and transient face/edge
-indices must not be stored in this model.
+[Documentation home](../README.md)
+
+`tolstack.project.Project` stores engineering definitions. Qt widgets, renderer
+objects, OCCT wrappers, and transient face/edge indices do not belong in it.
+The current JSON schema version is **1**; package versioning is separate.
 
 ## Object graph
 
-- A `PartDefinition` identifies one design and its source CAD file.
-- A `PartOccurrence` places an instance of a part in an assembly with a rigid
-  transform. Multiple occurrences may reference the same part definition.
-- A `FeatureDefinition` gives engineering meaning to geometry on a part. Its
-  optional signature is the persistent fingerprint used to re-find CAD
-  geometry after a reload.
-- A `ToleranceDefinition` describes one source of variation and its
-  distribution. Correlated sources share a correlation-group name.
-- A `DatumReference` binds a datum label and modifier to a feature.
-- A `DatumSystem` lists datum references in precedence order.
-- A `PositionControlDefinition` binds a feature pattern to a datum system.
-  Each pattern member references separate size, X-position, and Y-position
-  tolerance sources; its actual location is derived from current CAD geometry.
-- An `AssemblyConstraint` records design intent between features on two
-  occurrences. It does not solve the relationship.
-- A `ResponseDefinition` describes the key characteristic an analysis must
-  calculate, such as clearance or distance.
+| Object | Meaning |
+|---|---|
+| `PartDefinition` | Design identity and source CAD file path |
+| `PartOccurrence` | Instance of a part with a rigid transform |
+| `FeatureDefinition` | Engineering feature with an optional geometric signature |
+| `ToleranceDefinition` | Variation source and distribution definition |
+| `LinearStackDefinition` / `StackTerm` | Signed references to tolerance sources |
+| `DatumReference` / `DatumSystem` | Feature-bound datum labels and precedence |
+| `PositionControlDefinition` | Feature pattern tied to a datum system |
+| `AssemblyConstraint` | Declarative relationship between occurrence features |
+| `ResponseDefinition` | Requested characteristic, such as clearance or distance |
 
-All relationships use stable IDs. Display names are deliberately not keys.
+Relationships use stable IDs rather than display names. Pattern members have
+separate size, X-position, and Y-position sources; actual XY comes from current
+geometry in the datum frame. Declaring an occurrence, constraint, distribution,
+or response does not imply the GUI or solver executes every option.
 
 ## Persistence rules
 
-The project JSON format declares a `schema_version` and explicit units.
-`Project.load()` validates every cross-reference before returning. Unversioned
-dimension-bank and annotation JSON files are not silently treated as projects;
-they will need explicit importers so their meaning cannot be guessed.
+`Project.load()` validates cross-references. Future schema changes belong in
+`migrate_project_data()`. Unversioned dimension-bank and annotation JSON are not
+automatically treated as projects. Length units allow mm/in and angle units
+allow deg/rad, but the application does not implement complete unit conversion.
 
-The desktop bridge in `gui/project_mixin.py` owns the current project. The
-File menu saves and opens complete project JSON files. Stack-table rows become
-`ToleranceDefinition` and `StackTerm` objects, while geometry links and datum
-selections reference `FeatureDefinition.id`. On a STEP reload, geometric
-signatures are matched back to current scene entities; face and edge indices
-are retained only as transient renderer information.
+`gui/project_mixin.py` owns the desktop bridge. File-menu project saving captures
+stack definitions, geometry links, complete datum selections, and position
+controls. Evaluation adapts validated project objects into the numerical GD&T
+engine. Actual pattern XY values are recalculated against rematched CAD/frame
+geometry rather than being permanent measured coordinates in the file.
 
-The GD&T Position tab is also an editor for the project model. Saving converts
-its rows into `PositionPatternMember` records and tolerance sources. Evaluation
-then adapts the validated project objects into the numerical GD&T engine; it no
-longer treats editable table cells as the analysis source of truth. Actual X/Y
-values are recalculated from the rematched circular feature and current datum
-reference frame whenever the project is loaded.
+Project files reference CAD paths; geometry is not embedded. The dimension bank
+is saved separately. Camera/layout, measurement slots, live offset deviations,
+direction/visibility controls, histogram samples, and Eclipse settings are not
+a full persisted session. Datum synchronization requires a complete A/B/C set;
+an incomplete UI selection does not replace a previously stored datum system.
 
-Future format changes belong in `migrate_project_data()`. Domain constructors
-should only need to understand the current schema.
+## Geometric identity and recognition
+
+`FeatureSignature` supports circle, cylinder, plane, point, and generic kinds.
+It stores center, normal/axis, optional radius, point count, and bounding-box
+scale. Cylinder signatures use the midpoint of the axial extent, the analytic
+axis direction, and radius. Their center is independent of the CAD kernel's
+arbitrary choice of a point on that axis.
+
+On STEP loading, the worker recognizes analytic plane/cylinder surfaces and
+passes serializable metadata to scene entity information. Datum extraction
+uses it to distinguish a plane reference from an axis reference. Circular
+edges use validated circle fits. Unsupported curved faces are rejected as
+datums; absent metadata only permits a validated planar fallback. A signature
+kind is a matching aid, not independent proof that a face is a valid datum.
+
+Saved signatures are compared to current geometry by proximity and size rather
+than transient scene indices. Matching reports exact/good/ambiguous/none;
+ambiguous or revised geometry can require manual relinking. Legacy signatures
+remain usable, but a signature is not a durable CAD topology identifier.
 
 ## Solver boundary
 
-The project model is declarative. A deterministic solver will consume a
-validated `Project`, resolve constraints and datum precedence, and calculate
-responses. A variation engine will sample tolerances and invoke that solver.
-Neither solver should read values directly from GUI widgets.
+Current numerical engines calculate scalar stacks, supported geometric datum
+frames, position/size checks, and pin/hole mating-boundary clearance. They do
+not solve a general constrained assembly or simulate contact. Occurrence
+transforms and assembly constraints remain declarative in that workflow.
 
-The first solver slice should be a two-occurrence pin/hole assembly with a
-concentric constraint, MMC size tolerances, and a clearance response.
+The domain can describe fixed, uniform, normal, and triangular distributions
+and correlation groups. Current runtime stack/pattern sampling uses its
+uniform/split-normal conventions; a schema field does not enable correlated
+or arbitrary distribution execution.
+
+A future assembly solver should consume a validated `Project`, resolve
+constraints and datum precedence, calculate responses, and expose that
+calculation to the variation engine without reading GUI widgets. See the
+[roadmap](../ROADMAP.md) for remaining work.

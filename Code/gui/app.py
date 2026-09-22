@@ -1,32 +1,12 @@
-"""Desktop GUI for tolstack (PySide6).
+"""Desktop GUI for TolForge (PySide6).
 
-Window layout (slicer-style):
-- Main widget is the 3D STEP viewport, occupying the majority of the
-  window, with a slim status/legend strip beneath it and an
-  always-visible analysis toolbar above it (method, global Cpk,
-  iterations, range, Calculate button) - similar to how a 3D printing
-  slicer keeps its viewport controls docked to the viewport itself.
-- A left sidebar (QTabWidget) holds the three other functional areas as
-  separate tabs, mirroring the "Prepare" / "Preview" tab pattern common
-  in slicers:
-    - "Dimension Bank": reusable dimension templates (no sign) that can
-      be pulled into the current stack, saved from a row, and persisted
-      to/from a JSON file
-    - "Stack Table": the editable dimension table (name, nominal, tol+,
-      tol-, sign, optional Cpk) with add/remove row buttons
-    - "Results": text summary + histogram (matplotlib) for Monte Carlo,
-      plus a fit assessment (gap / interference / mixed) against target
-- STEP preview: load a STEP file via compas_occ and view/select its
-  faces, edges, and vertices in the embedded 3D viewport
+A left navigation rail selects Inspect, Library, Stack, Results, Measure,
+GD&T, and Eclipse. The main STEP viewport and right workspace panel are
+resizable. Load/Clear/Analyze controls stay above the viewport; analysis
+settings live in Results. Mixins implement analysis, measurement, linked
+previews, datum inspection, and project persistence.
 
-This file is intentionally slim: the actual logic lives in mixins in this
-same package (step_viewer_mixin.py, dimension_bank_mixin.py,
-analysis_mixin.py) and the 3D viewport widget in step_renderer.py. This
-file only builds the UI layout and wires widgets to the methods those
-mixins provide.
-
-Run with:
-    python gui/app.py
+Run from the repository root with: python Code/gui/app.py
 """
 
 import os
@@ -45,12 +25,9 @@ from pathlib import Path
 # from-source OCCT build and won't exist/won't be needed on machines using
 # the conda-forge compas_occ package instead.
 #
-# NOTE: this app must be run with the Python 3.10 interpreter at
-# D:\PROGRAMS\PYTHON\python.exe - compas_viewer is not compatible with
-# Python 3.14 (its Config class breaks under Python 3.14's new lazy
-# annotation evaluation, PEP 649), so pythonocc-core/compas_occ/compas_viewer
-# were all installed against 3.10 specifically, not whatever `python`
-# happens to resolve to on PATH.
+# Local source runtime: D:\PROGRAMS\PYTHON\python.exe (Python 3.10).
+# Package metadata currently requires 3.11+; see docs/development.md for
+# that discrepancy and the local CAD/DLL environment before switching Python.
 if os.name == "nt":
     for _dll_dir in (
         r"D:\GIT\REPOS\occt-install\win64\vc14\bin",
@@ -131,7 +108,7 @@ class TolstackWindow(
         root_layout.setSpacing(0)
 
         # ==================================================================
-        # Left sidebar: tabbed panel (Dimension Bank / Stack Table / Results)
+        # Right workspace panel: pages selected by the left navigation rail
         # Slicer-style "Prepare" panel - everything that isn't the 3D view.
         # ==================================================================
         sidebar = QTabWidget()
@@ -820,9 +797,8 @@ class TolstackWindow(
         shell_layout.addWidget(sidebar, 1)
 
         # ==================================================================
-        # Right/main column: 3D STEP viewport is the main widget, with an
-        # always-visible analysis toolbar docked above it and a slim
-        # status/legend strip docked below it - mirrors a slicer's plater.
+        # Main viewport column, with load/clear/analyze controls above and
+        # status/legend below. Analysis settings are in the Results page.
         # ==================================================================
         viewport_widget = QWidget()
         viewport_widget.setMinimumWidth(410)
@@ -830,7 +806,7 @@ class TolstackWindow(
         viewport_column.setContentsMargins(8, 8, 8, 8)
         viewport_column.setSpacing(6)
 
-        # --- Always-visible analysis toolbar (above the viewport) ---
+        # --- Viewport action toolbar ---
         toolbar = QFrame()
         toolbar.setFrameShape(QFrame.StyledPanel)
         toolbar.setObjectName("viewportToolbar")

@@ -1,12 +1,11 @@
-"""Mixin for the 'GD&T Position' tab: datum reference frame construction
-from picked faces/circular edges, pattern-of-features management via a
-table, and nominal + Monte Carlo position tolerance evaluation.
+"""GD&T workspace: datum construction, inspection, and position patterns.
 
-Reuses MeasurementMixin's own circle/plane fitting (_fit_circle,
-_fit_normal_or_direction) to turn a picked face or circular edge into a
-(point, direction) datum feature or a (center, diameter) pattern feature
-- no new geometry-fitting code, just new interpretation of the same
-fits.
+Datum extraction uses analytic STEP plane/cylinder metadata where available,
+validated planar fallback points, or validated circular-edge fits. Cylinders
+supply axes rather than fitted plane normals. Supported plane/axis frames
+and their restrictions are implemented in tolstack.gdt. DatumInspectionMixin
+renders datum membership, labels, origin, and axes. Pattern evaluation adapts
+project definitions into nominal and Monte Carlo position/size checks.
 """
 
 import numpy as np

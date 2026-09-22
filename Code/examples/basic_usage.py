@@ -2,7 +2,7 @@
 Ejemplo básico de uso del paquete tolstack.
 
 Ejecutar desde la raíz del repo con:
-    python examples/basic_usage.py
+    python Code/examples/basic_usage.py
 """
 
 import sys

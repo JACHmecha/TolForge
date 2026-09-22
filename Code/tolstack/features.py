@@ -37,7 +37,7 @@ class FeatureSignature:
     kind: str
     center: np.ndarray
     normal: np.ndarray | None  # None for "point" and some "generic" cases
-    radius: float | None       # only meaningful for "circle"
+    radius: float | None       # meaningful for "circle" and "cylinder"
     point_count: int           # rough tessellation-density fingerprint, tie-breaker only
     bbox_diagonal: float       # size scale of the point cloud this was fit from
 
@@ -77,7 +77,8 @@ def signature_from_points(
 ) -> FeatureSignature | None:
     """Builds a signature from whatever a pick already produces elsewhere
     in this app: raw tessellation points, plus an optional circle fit
-    (the same dict _fit_circle already returns - center/radius/normal).
+    (center/radius/normal) and optional analytic surface metadata. Cylinders
+    use their analytic axis/radius and the midpoint of the axial point extent.
     Returns None if there isn't enough here to build anything meaningful
     (fewer than 1 point).
     """

@@ -1,153 +1,70 @@
-# TolForge Roadmap
+# TolForge roadmap
 
-> **Vision:** Build the leading open-source platform for mechanical
-> tolerance analysis, from simple 1D tolerance stack-ups to full 3D
-> assembly variation analysis with CAD and GD&T integration.
+This is a capability roadmap, not a release schedule. The package version in
+`setup.py` is currently `0.1.0`; completed items below do not imply that a
+separate release or installer has been published.
 
-------------------------------------------------------------------------
+## Implemented
 
-# Version 0.1 --- Core Library ✅
+- [x] Signed 1D stacks: Worst Case, RSS, Monte Carlo, asymmetric tolerances.
+- [x] Uniform and Cpk-driven split-normal stack sampling.
+- [x] Dimension bank, stack editor, histogram, and acceptance-range statistics.
+- [x] Versioned project JSON and stable feature/tolerance/datum IDs.
+- [x] STEP tessellation, per-entity picking, solid grouping, and mesh controls.
+- [x] Contextual inspection and mesh-based measurement.
+- [x] Resizable workspaces and a shared dark application/chart theme.
+- [x] Stack links for diameter, position, and surface-offset previews.
+- [x] Live surface controls, tolerance layers, and worst-case/MC preview snaps.
+- [x] Datum face colors, A/B/C labels, origin/axes, and visibility controls.
+- [x] Analytic plane/cylinder recognition from STEP, including trimmed cylinders.
+- [x] Plane/axis datum frames for the configurations documented in
+  [GD&T semantics](docs/gdt-semantics.md#datum-reference-frames).
+- [x] Single-segment position-pattern evaluation with size checks and
+  RFS/MMC/LMC feature modifiers.
+- [x] Pin/hole mating-boundary calculation helpers.
+- [x] Circular-aperture occlusion calculations and Monte Carlo visualization.
+- [x] SVG characteristic/modifier assets and a Windows packaging workflow.
 
-**Status:** In Progress
+## Next: robustness and usability
 
-### Features
+- [ ] Align package metadata, source runtime guidance, and optional CAD dependencies.
+- [ ] Replace machine-specific DLL paths with portable configuration.
+- [ ] Consistent unit conversion and labels across CAD, measurement, and analysis.
+- [ ] More explicit unresolved-link and incomplete-datum save workflows.
+- [ ] Persist preview/layout preferences where useful.
+- [ ] Reproducible native graphics checks across supported environments.
+- [ ] Larger-assembly performance work and clearer numerical error reporting.
 
--   [x] Object-oriented architecture
--   [x] Dimension class
--   [x] Stack class
--   [x] Worst-Case analysis
--   [x] RSS analysis
--   [x] Monte Carlo simulation
--   [x] Support for asymmetric tolerances
+## Analysis and data exchange
 
-------------------------------------------------------------------------
+- [ ] CSV/Excel import and export.
+- [ ] Engineering reports and PDF export.
+- [ ] Sensitivity analysis and cumulative/probability-density plots.
+- [ ] Solver support for triangular/custom distributions and correlation.
+- [ ] Broader process-capability and yield reporting.
 
-# Version 0.2 --- Data & Visualization
+The domain schema can already describe additional distributions and correlation
+groups; the current numerical engines do not implement every schema option.
 
-### Planned Features
+## CAD and GD&T expansion
 
--   [ ] Histogram visualization
--   [ ] Probability density plots
--   [ ] Cumulative distribution plots
--   [ ] Sensitivity analysis
--   [ ] Statistical summary reports
--   [ ] CSV import/export
--   [ ] Excel import/export
+- [ ] Cylinder fitting for spline-defined surfaces and broader analytic recognition.
+- [ ] Automatic dimension/chain extraction and richer CAD annotation workflows.
+- [ ] General axis/axis, skew, and material-boundary datum simulators.
+- [ ] Datum feature shift, composite position controls, and orientation coupling.
+- [ ] Flatness, parallelism, perpendicularity, circularity, cylindricity, and profile solvers.
+- [ ] Full feature-control-frame editing and drawing generation.
 
-------------------------------------------------------------------------
+An icon or schema type does not mean the corresponding solver exists.
+Cylindrical datum recognition is implemented; cylindricity evaluation is not.
 
-# Version 0.3 --- Interactive Application
+## Assembly variation and platform work
 
-### Planned Features
+- [ ] Solve occurrence constraints and calculate assembly responses.
+- [ ] Automatic chain detection, constraint graphs, and loop handling.
+- [ ] Contact sequencing, deformation, and full 3D variation analysis.
+- [ ] DXF exchange, plugins, collaboration, and optimization workflows.
 
--   [ ] Interactive stack editor
--   [ ] Real-time calculations
--   [ ] Engineering report generation
--   [ ] Save and load projects
-
-------------------------------------------------------------------------
-
-# Version 0.4 --- Advanced Statistics
-
-### Planned Features
-
--   [ ] Normal distributions
--   [ ] Uniform distributions
--   [ ] Triangular distributions
--   [ ] Custom distributions
--   [ ] Yield prediction
--   [ ] Six Sigma analysis
-
-------------------------------------------------------------------------
-
-# Version 0.5 --- CAD Integration
-
-### Planned Features
-
--   [ ] STEP import
--   [ ] Feature recognition
--   [ ] Automatic dimension extraction
--   [ ] Assembly support
--   [ ] CAD geometry visualization
-
-------------------------------------------------------------------------
-
-# Version 0.6 --- Tolerance Chains
-
-### Planned Features
-
--   [ ] Automatic tolerance chain detection
--   [ ] Constraint graph generation
--   [ ] Path optimization
--   [ ] Stack visualization
--   [ ] Loop detection
-
-------------------------------------------------------------------------
-
-# Version 1.0 --- 3D Tolerance Analysis
-
-### Planned Features
-
--   [ ] Full 3D tolerance stack-up
--   [ ] Assembly variation analysis
--   [ ] Coordinate transformations
--   [ ] Datum systems
--   [ ] Position analysis
--   [ ] Orientation analysis
-
-------------------------------------------------------------------------
-
-# Version 1.5 --- GD&T
-
-### Planned Features
-
--   [ ] Datums
--   [ ] Feature Control Frames (FCF)
--   [ ] Position tolerance
--   [ ] Flatness
--   [ ] Parallelism
--   [ ] Perpendicularity
--   [ ] Circularity
--   [ ] Cylindricity
--   [ ] Profile tolerances
--   [ ] Material condition modifiers (MMC, LMC, RFS)
-
-------------------------------------------------------------------------
-
-# Version 2.0 --- Engineering Platform
-
-### Planned Features
-
--   [ ] Drawing generation
--   [ ] Automatic tolerance annotation
--   [ ] Engineering reports
--   [ ] PDF export
--   [ ] DXF export
--   [ ] API for third-party software
--   [ ] Plugin architecture
-
-------------------------------------------------------------------------
-
-# Long-Term Vision
-
-TolForge aims to become an open-source engineering platform for
-dimensional variation analysis.
-
-The long-term objective is to provide engineers, researchers, and
-students with a free, extensible alternative to commercial tolerance
-analysis software while encouraging community-driven development.
-
-Future capabilities may include:
-
--   Advanced statistical tolerance analysis
--   CAD interoperability
--   Automatic tolerance chain generation
--   GD&T support
--   Feature Control Frames
--   Drawing generation
--   Assembly optimization
--   Cloud collaboration
--   AI-assisted tolerance optimization
-
-Contributions, feature requests, bug reports, and discussions are always
-welcome.
+The current occurrence/constraint model records design intent. It does not
+provide a general assembly solver; the proposed first slice remains a
+pin/hole assembly with a clearance response.

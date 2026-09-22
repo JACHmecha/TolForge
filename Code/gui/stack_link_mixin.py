@@ -6,6 +6,13 @@ already in the stack (including several dimensions sharing one feature,
 e.g. a hole's diameter AND its position) and by the stack's own
 worst-case/Monte-Carlo results, not just a manual one-off measurement.
 
+Surface offsets share controls/layer construction with Measure: zero deviation
+is nominal, current geometry is orange, and optional lower/upper layers are
+blue/violet. Updates are throttled. Same-feature normal offsets sum deviations
+and bounds; other contributions remain at current values. Direction and live
+preview settings are session state. Translations are not curved inflation or
+collision certification.
+
 Scope, stated explicitly:
 - A linked dimension's value always ranges over its own
   [nominal-tol_minus, nominal+tol_plus] - same convention as everywhere

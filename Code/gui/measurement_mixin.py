@@ -1,37 +1,15 @@
-"""Mixin providing distance & angle measurement between two picked STEP
-entities (face/edge/vertex), a translucent tolerance-offset preview to
-visually flag clearance vs. interference, and "add to dimension bank"
-support for whatever gets measured.
+"""Sampled distance/angle measurement and live tolerance-offset previews.
 
-All measurements are computed directly from the same tessellated point
-data already used to render each entity (mesh vertices for faces,
-polyline points for edges, the single point for vertices) rather than by
-calling into OCCT's own distance/analysis API. That keeps this mixin
-independent of the exact compas_occ/pythonocc-core version installed, at
-the cost of being a tessellation-resolution-limited approximation rather
-than an exact analytic result. For engineering fit-up checks (as opposed
-to metrology-grade output) this is normally more than accurate enough,
-but the numbers are only as good as the STEP tessellation density -
-coarsely tessellated curved faces will give noisier normals/angles.
+Measurements use tessellated face vertices, edge polylines, and picked
+vertices. Min/max distances compare sampled points; normals/directions use
+SVD fits and angles are folded to 0-90 degrees. These approximations depend
+on mesh resolution and are not exact CAD distances or interference checks.
+Fitted planar directions can be misleading for curved faces.
 
-Method:
-- Min/max distance: brute-force point-to-point distance between the two
-  entities' sampled points.
-- Face "normal" / edge "direction": a best-fit plane (face) or best-fit
-  line (edge) through the sampled points via SVD. This handles
-  near-planar faces and straight/gently-curved edges well; it will be
-  misleading on strongly curved geometry (e.g. a full cylindrical face),
-  where "normal distance" and "angle" are less meaningful - the angle
-  and normal-distance fields are still shown in that case since there's
-  no reliable way to detect it up front, but treat them with suspicion
-  if either entity is obviously curved.
-- Normal distance: the min-distance vector, projected onto whichever
-  entity has a face (preferring A's, falling back to B's), oriented so
-  a positive value means "gap" and a negative value means "overlap /
-  interference". This is the number offered to the dimension bank.
-- Angle: angle between the two entities' fitted normal/direction
-  vectors, folded into 0-90 degrees since SVD doesn't return a signed
-  direction.
+Shared offset controls translate face A (otherwise face B) relative to its
+nominal location, with current/lower/upper layers and reversible direction.
+Analytic cylindrical datum recognition is handled separately by GD&T code;
+it does not make these measurements or translations analytic cylinder checks.
 """
 
 import numpy as np

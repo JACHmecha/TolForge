@@ -84,11 +84,10 @@ class Stack:
 
         Per dimension, the sampling depends on `Dimension.cpk`:
         - `cpk is None` (default): uniform distribution over the entire
-          tolerance range. This is the most pessimistic case and doesn't
-          represent a real manufacturing process.
+          tolerance range, without assuming a centered process distribution.
         - `cpk` set (e.g. 1.33, 1.67, 2.0): split normal distribution,
           calibrated so the tolerance limit sits at `3 * cpk` standard
-          deviations from nominal, following the standard Cpk definition.
+          deviations from nominal on each side. Samples are not clipped.
 
         `default_cpk`: if a dimension doesn't carry its own `cpk`, this
         value is applied instead of falling back to uniform. Useful for
