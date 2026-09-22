@@ -1015,7 +1015,12 @@ class TolstackWindow(
         self.selection_name_label.setText(feature.name if feature else f"{kind.title()} {index + 1}")
         self.selection_type_label.setText(f"{kind.title()} #{index}")
         circle = info.get("circle")
-        if circle is not None:
+        surface = info.get("surface") or {}
+        if surface.get("kind") == "cylinder":
+            axis = ", ".join(f"{v:.4f}" for v in surface["direction"])
+            geometry = (f"Cylinder · diameter {surface['radius'] * 2:.4f} {self.project.units.length}"
+                        f" · axis direction ({axis})")
+        elif circle is not None:
             geometry = f"Circular geometry · diameter {circle['radius'] * 2:.4f} {self.project.units.length}"
         elif kind == "solid":
             geometry = f"Solid occurrence · body {index + 1}"

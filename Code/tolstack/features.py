@@ -29,7 +29,7 @@ import numpy as np
 # Kinds a signature can represent - deliberately coarse; enough to avoid
 # comparing a circle's signature against a plane's, not a full geometry
 # classification.
-_KINDS = ("circle", "plane", "point", "generic")
+_KINDS = ("circle", "cylinder", "plane", "point", "generic")
 
 
 @dataclass
@@ -73,6 +73,7 @@ class FeatureSignature:
 
 def signature_from_points(
     entity_type: str, points: np.ndarray, circle_fit: dict | None = None,
+    surface: dict | None = None,
 ) -> FeatureSignature | None:
     """Builds a signature from whatever a pick already produces elsewhere
     in this app: raw tessellation points, plus an optional circle fit
@@ -85,6 +86,16 @@ def signature_from_points(
         return None
 
     bbox_diagonal = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+
+    if surface and surface.get("kind") == "cylinder":
+        axis = np.asarray(surface["direction"], dtype=float)
+        axis /= np.linalg.norm(axis)
+        point = np.asarray(surface["point"], dtype=float)
+        # Midpoint of axial extent is invariant to mesh point density and to
+        # where the CAD kernel chooses an arbitrary point on the axis.
+        stations = (points - point) @ axis
+        center = point + axis * (stations.min() + stations.max()) / 2
+        return FeatureSignature("cylinder", center, axis, surface["radius"], len(points), bbox_diagonal)
 
     if circle_fit is not None:
         return FeatureSignature(

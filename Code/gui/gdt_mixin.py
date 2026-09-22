@@ -114,8 +114,8 @@ class GdtMixin(DatumInspectionMixin):
             QMessageBox.warning(
                 self, "Can't use this as a datum",
                 "A datum needs a face (uses its best-fit plane) or a circular "
-                "edge/hole (uses its fitted center + axis) - a vertex or a "
-                "clearly non-circular edge doesn't define an orientation."
+                "edge/hole. Only planar faces and analytically recognized cylindrical "
+                "faces are supported; other curved faces cannot define this datum."
             )
             return False
         try:
@@ -126,6 +126,7 @@ class GdtMixin(DatumInspectionMixin):
         self._datum_slot[slot] = {
             "point": point, "direction": direction, "description": description,
             "feature_id": feature_id,
+            "kind": self._gdt_datum_kind(info),
         }
         self._current_drf = None
         self._pattern_arm = False
@@ -144,12 +145,37 @@ class GdtMixin(DatumInspectionMixin):
         points = np.asarray(info["points"], dtype=float)
 
         if info["type"] == "face":
+            surface = info.get("surface")
+            if surface is not None:
+                kind = surface.get("kind")
+                if kind in {"cylinder", "plane"}:
+                    point = np.asarray(surface["point"], dtype=float)
+                    normal = np.asarray(surface["direction"], dtype=float)
+                    normal = normal / np.linalg.norm(normal)
+                    # Put the display anchor near this trimmed face while
+                    # preserving the exact underlying plane/axis location.
+                    centroid = points.mean(axis=0)
+                    if kind == "cylinder":
+                        point = point + normal * np.dot(centroid - point, normal)
+                        description = f"Cylindrical face #{info['index']} · axis · Ø{2 * surface['radius']:.4f}"
+                    else:
+                        point = centroid - normal * np.dot(centroid - point, normal)
+                        description = f"Planar face #{info['index']}"
+                    return point, normal, description
+                return None, None, None
             centroid, normal = self._fit_normal_or_direction(points, "face")
             if normal is None:
+                return None, None, None
+            # Legacy/test geometry without CAD metadata: accept only points
+            # lying in a plane, never infer a cylinder from an SVD normal.
+            extent = max(np.linalg.norm(np.ptp(points, axis=0)), 1e-9)
+            if np.max(np.abs((points - centroid) @ normal)) > extent * 1e-6:
                 return None, None, None
             return centroid, normal, f"Face #{info['index']}"
 
         if info["type"] == "edge":
+            if not self._context_is_circular_edge(info):
+                return None, None, None
             self._measure_ensure_circle_fit(info)
             circle = info.get("circle")
             if circle is None:
@@ -157,6 +183,10 @@ class GdtMixin(DatumInspectionMixin):
             return circle["center"], circle["normal"], f"Edge #{info['index']} (circle center)"
 
         return None, None, None
+
+    @staticmethod
+    def _gdt_datum_kind(info):
+        return "axis" if info["type"] == "edge" or (info.get("surface") or {}).get("kind") == "cylinder" else "plane"
 
     def _update_datum_labels(self):
         for slot, label_widget in self.datum_slot_labels.items():
@@ -175,7 +205,7 @@ class GdtMixin(DatumInspectionMixin):
 
         try:
             def to_datum_feature(entry):
-                return DatumFeature(point=entry["point"], direction=entry["direction"])
+                return DatumFeature(point=entry["point"], direction=entry["direction"], kind=entry.get("kind", "plane"))
 
             primary = to_datum_feature(self._datum_slot["Primary"])
             secondary = to_datum_feature(self._datum_slot["Secondary"])

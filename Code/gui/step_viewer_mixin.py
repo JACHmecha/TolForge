@@ -358,6 +358,7 @@ class StepViewerMixin:
                     self._step_entity_info[id(obj)] = {
                         "type": "face", "index": i, "points": points, "mesh": face_mesh,
                         "solid_index": solid_index,
+                        "surface": result.face_surfaces[i] if i < len(result.face_surfaces) else None,
                     }
 
             for i, polyline in enumerate(result.edge_polylines):

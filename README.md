@@ -44,6 +44,15 @@ vertex selection.
   the panel reports its model coordinates. Visibility toggles and marker size
   controls are in the GD&T panel. Reassigning or clearing a datum invalidates
   the old frame; saved datum assignments are restored with their geometry.
+- **Cylindrical datums**: analytic cylindrical STEP faces use their exact axis
+  and radius, including trimmed cylinders and rotated parts. The inspector
+  reports the cylinder diameter/direction and the viewport marks its datum
+  axis. Plane–axis and axis–plane A/B frames use the intersection of the axis
+  with a perpendicular locating plane as the origin; C must fix rotation
+  through a side plane or a separate parallel axis. Skew and axis–axis A/B
+  frames are not supported. Other curved surfaces, including cylinders
+  represented only as spline surfaces, are rejected as datums rather than
+  treated as planes. Existing plane datums continue to work.
 
 ## Project structure
 

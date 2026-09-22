@@ -18,11 +18,11 @@ Scope, stated explicitly rather than implied:
   XY plane the way this module does isn't quite measuring position in
   the plane actually perpendicular to that feature's own axis.
 
-A "datum feature" here is just (point, direction) - a point on/in the
-feature and its unit normal/axis. That's deliberately the same shape as
-what MeasurementMixin already produces: centroid+normal for a face
-(_fit_normal_or_direction) or center+normal for a circular edge/hole
-(_fit_circle) - no new geometry extraction needed, just reused.
+A datum feature carries a point, direction, and an explicit plane/axis kind.
+Analytic cylindrical faces use their STEP axis. Axial frames support a
+perpendicular locating plane in A/B and a third datum to fix rotation.
+Skew and axis/axis A-B configurations are rejected; no datum simulator or
+material-boundary shift is modeled.
 """
 
 from dataclasses import dataclass
@@ -38,10 +38,15 @@ import numpy as np
 class DatumFeature:
     point: np.ndarray
     direction: np.ndarray  # unit vector
+    kind: str = "plane"  # an axis constrains transverse position, not an axial plane
 
     def __post_init__(self):
         self.point = np.asarray(self.point, dtype=float)
         direction = np.asarray(self.direction, dtype=float)
+        if self.kind not in {"plane", "axis"}:
+            raise ValueError("Datum kind must be 'plane' or 'axis'.")
+        if self.point.shape != (3,) or direction.shape != (3,) or not np.isfinite([self.point, direction]).all():
+            raise ValueError("Datum point and direction must be finite 3D vectors.")
         norm = np.linalg.norm(direction)
         if norm == 0:
             raise ValueError("Datum feature direction cannot be a zero vector.")
@@ -73,6 +78,9 @@ def build_datum_reference_frame(
     datum features, in precedence order (primary constrains orientation
     the most, tertiary just fixes the one remaining translational DOF).
 
+    Axis configurations are delegated to _build_axis_datum_frame. The
+    following construction applies when A and B are planes:
+
     - Z axis = primary's direction.
     - X axis = secondary's direction, Gram-Schmidt-orthogonalized against
       Z (i.e. secondary only needs to be roughly perpendicular to
@@ -94,6 +102,11 @@ def build_datum_reference_frame(
       guaranteed well-conditioned (its own transpose is its inverse), no
       degenerate-matrix risk from the construction itself.
     """
+    if primary.kind == "axis" or secondary.kind == "axis":
+        return _build_axis_datum_frame(primary, secondary, tertiary)
+    if tertiary.kind == "axis" and abs(np.dot(tertiary.direction, primary.direction)) < 1 - 1e-6:
+        raise ValueError("A tertiary axis must be parallel to the primary plane normal.")
+
     z_axis = primary.direction
 
     x_raw = secondary.direction - np.dot(secondary.direction, z_axis) * z_axis
@@ -116,6 +129,39 @@ def build_datum_reference_frame(
     origin = basis.T @ rhs  # exact since `basis` is orthonormal (basis.T == basis^-1)
 
     return DatumReferenceFrame(origin=origin, x_axis=x_axis, y_axis=y_axis, z_axis=z_axis)
+
+
+def _build_axis_datum_frame(primary, secondary, tertiary):
+    """Common plane/axis locating systems, without inventing missing DOFs.
+
+    An axis fixes transverse position. A perpendicular plane fixes the axial
+    station. The last datum clocks the remaining rotation around that axis.
+    More general skew or axis/axis systems require a simulator model.
+    """
+    if primary.kind == "axis" and secondary.kind == "plane":
+        axis, plane = primary, secondary
+        z_axis = axis.direction
+    elif primary.kind == "plane" and secondary.kind == "axis":
+        plane, axis = primary, secondary
+        z_axis = plane.direction
+    else:
+        raise ValueError("An axial datum frame needs a perpendicular plane in A or B; axis/axis A-B frames are not supported.")
+    if abs(np.dot(axis.direction, plane.direction)) < 1 - 1e-6:
+        raise ValueError("The datum axis must be perpendicular to the locating plane for this frame configuration.")
+    station = np.dot(plane.point - axis.point, plane.direction) / np.dot(axis.direction, plane.direction)
+    origin = axis.point + station * axis.direction
+    if tertiary.kind == "axis":
+        if abs(np.dot(tertiary.direction, z_axis)) < 1 - 1e-6:
+            raise ValueError("The clocking datum axis must be parallel to the locating axis.")
+        clock = tertiary.point - origin
+    else:
+        clock = tertiary.direction
+    x_axis = clock - np.dot(clock, z_axis) * z_axis
+    length = np.linalg.norm(x_axis)
+    if length < 1e-9:
+        raise ValueError("Datum C does not fix rotation around the cylinder axis. Choose a side plane or a separate parallel axis.")
+    x_axis /= length
+    return DatumReferenceFrame(origin, x_axis, np.cross(z_axis, x_axis), z_axis)
 
 
 # ----------------------------------------------------------------------

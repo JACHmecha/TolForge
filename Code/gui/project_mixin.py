@@ -192,11 +192,11 @@ class ProjectMixin:
         if self._active_part_id is None:
             raise ValueError("Load a STEP part before registering a feature.")
 
-        signature = signature_from_points(info["type"], info["points"], info.get("circle"))
+        signature = signature_from_points(info["type"], info["points"], info.get("circle"), info.get("surface"))
         if signature is None:
             raise ValueError("The selected entity has no usable geometry signature.")
         kind = {
-            "circle": "circle", "plane": "plane", "point": "point", "generic": "generic"
+            "circle": "circle", "cylinder": "cylinder", "plane": "plane", "point": "point", "generic": "generic"
         }[signature.kind]
         feature = self.project.add_feature(
             FeatureDefinition(
@@ -236,7 +236,8 @@ class ProjectMixin:
                         self._measure_ensure_circle_fit(info)
                         circle = info.get("circle")
                     candidates.append(
-                        signature_from_points(info["type"], info["points"], circle)
+                        signature_from_points(info["type"], info["points"], circle,
+                                              info.get("surface") if target.kind == "cylinder" else None)
                     )
                 candidates_by_kind[target.kind] = candidates
             candidates = candidates_by_kind[target.kind]
@@ -385,6 +386,7 @@ class ProjectMixin:
             self._datum_slot[slot] = {
                 "point": point, "direction": direction, "description": description,
                 "feature_id": datum.feature_id, "datum_ref_id": datum.id,
+                "kind": self._gdt_datum_kind(info),
             }
         self._update_datum_labels()
         if all(self._datum_slot[slot] is not None for slot in slots):

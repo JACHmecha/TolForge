@@ -119,9 +119,16 @@ class DatumInspectionMixin:
                     anchor = np.asarray(entry["point"], dtype=float)
                     direction = np.asarray(entry["direction"], dtype=float)
                     direction = direction / np.linalg.norm(direction)
-                    tip = anchor + direction * length * 0.65
-                    add(Line(anchor, tip), linecolor=color, linewidth=2, name=f"Datum {letter} leader")
-                    tag(f"[{letter}]", tip, hex_color)
+                    if entry.get("kind") == "axis":
+                        stations = (np.asarray(info["points"]) - anchor) @ direction
+                        start = anchor + direction * (stations.min() - length * 0.3)
+                        tip = anchor + direction * (stations.max() + length * 0.3)
+                        add(Line(start, tip), linecolor=color, linewidth=3, name=f"Datum {letter} axis")
+                        tag(f"[{letter}] axis", tip, hex_color)
+                    else:
+                        tip = anchor + direction * length * 0.65
+                        add(Line(anchor, tip), linecolor=color, linewidth=2, name=f"Datum {letter} leader")
+                        tag(f"[{letter}]", tip, hex_color)
 
             if self.show_datum_frame.isChecked() and self._current_drf is not None:
                 origin = np.asarray(self._current_drf.origin)

@@ -17,13 +17,14 @@ class StepLoadResult:
     """Plain data container - no Qt/GL objects, safe to build off-thread
     and hand across the thread boundary via a signal."""
 
-    __slots__ = ("face_meshes", "face_solid_indices", "edge_polylines", "vertex_points")
+    __slots__ = ("face_meshes", "face_solid_indices", "edge_polylines", "vertex_points", "face_surfaces")
 
-    def __init__(self, face_meshes, face_solid_indices, edge_polylines, vertex_points):
+    def __init__(self, face_meshes, face_solid_indices, edge_polylines, vertex_points, face_surfaces=None):
         self.face_meshes = face_meshes
         self.face_solid_indices = face_solid_indices
         self.edge_polylines = edge_polylines
         self.vertex_points = vertex_points
+        self.face_surfaces = face_surfaces or []
 
 
 class StepLoadWorker(QObject):
@@ -77,11 +78,13 @@ class StepLoadWorker(QObject):
         # than part of one fused mesh with no face boundaries.
         face_meshes = []
         face_solid_indices = []
+        face_surfaces = []
         for face, solid_index in face_solid_pairs:
             face_brep = OCCBrep.from_brepfaces([face], solid=False)
             face_mesh, _unused_edges = self._tessellate(face_brep)
             face_meshes.append(face_mesh)
             face_solid_indices.append(solid_index)
+            face_surfaces.append(self._recognize_surface(face))
 
         # The whole-Brep to_viewmesh() call also returns per-edge
         # polylines - reuse that instead of re-deriving edge geometry by
@@ -101,7 +104,32 @@ class StepLoadWorker(QObject):
         return StepLoadResult(
             face_meshes=face_meshes, face_solid_indices=face_solid_indices,
             edge_polylines=edge_polylines, vertex_points=vertex_points,
+            face_surfaces=face_surfaces,
         )
+
+    @staticmethod
+    def _recognize_surface(face):
+        """Extract located analytic geometry before discarding the OCCT face.
+
+        Only plain Python values cross the worker boundary. A trimmed or
+        partial cylindrical face retains the same underlying cylinder axis.
+        """
+        from OCC.Core.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder
+        try:
+            adaptor = face.occ_adaptor
+            kind = adaptor.GetType()
+            if kind == GeomAbs_Cylinder:
+                cylinder = adaptor.Cylinder()
+                axis = cylinder.Axis()
+                return {"kind": "cylinder", "point": list(axis.Location().Coord()),
+                        "direction": list(axis.Direction().Coord()), "radius": cylinder.Radius()}
+            if kind == GeomAbs_Plane:
+                plane = adaptor.Plane()
+                return {"kind": "plane", "point": list(plane.Location().Coord()),
+                        "direction": list(plane.Axis().Direction().Coord())}
+            return {"kind": "other"}
+        except (AttributeError, RuntimeError):
+            return {"kind": "unknown"}
 
     @staticmethod
     def _group_faces_by_solid(brep, occ_brep_cls):
