@@ -21,6 +21,7 @@ from compas.colors import Color
 
 from .step_renderer import Renderer, detect_step_backend
 from .step_load_worker import StepLoadWorker
+from .viewport_adapter import CompasViewportAdapter
 
 # Muted engineering-material palette for distinguishing assembly solids on
 # the dark viewport. The hues remain distinct without competing with the
@@ -82,11 +83,10 @@ class StepViewerMixin:
         self._reset_surface_previews()
         self.step_status_label.setText("No STEP file loaded yet.")
         if self._step_preview_renderer is not None:
-            scene = self._step_preview_renderer.scene
-            for obj in list(scene.objects):
-                scene.remove(obj)
+            viewport = CompasViewportAdapter(self._step_preview_renderer)
+            viewport.clear()
             self._step_entity_info = {}
-            self._step_preview_renderer.update()
+            viewport.refresh()
             QApplication.processEvents()
         else:
             self._show_step_preview_placeholder()
@@ -312,7 +312,7 @@ class StepViewerMixin:
         path = worker.path
 
         try:
-            scene = self._step_preview_renderer.scene
+            viewport = CompasViewportAdapter(self._step_preview_renderer)
 
             # IMPORTANT: `scene` here is actually a property that resolves
             # to the single Viewer-singleton-wide scene, shared across every
@@ -321,8 +321,7 @@ class StepViewerMixin:
             # previously-loaded STEP file would keep accumulating invisibly
             # underneath whatever the current widget shows.
             self._reset_surface_previews()
-            for stale_obj in list(scene.objects):
-                scene.remove(stale_obj)
+            viewport.clear()
 
             self._step_entity_info = {}
 
@@ -345,11 +344,11 @@ class StepViewerMixin:
                 solid_index = result.face_solid_indices[i] if i < len(result.face_solid_indices) else 0
                 face_color = solid_palette[solid_index % len(solid_palette)]
                 try:
-                    obj = scene.add(
+                    obj = viewport.add(
                         face_mesh, show_faces=True, show_lines=False, facecolor=face_color
                     )
                 except TypeError:
-                    obj = scene.add(face_mesh)
+                    obj = viewport.add(face_mesh)
                 if obj is not None:
                     points = np.array(
                         [face_mesh.vertex_attributes(vkey, "xyz") for vkey in face_mesh.vertices()],
@@ -363,18 +362,18 @@ class StepViewerMixin:
 
             for i, polyline in enumerate(result.edge_polylines):
                 try:
-                    obj = scene.add(polyline, linecolor=edge_color, linewidth=1.5)
+                    obj = viewport.add(polyline, linecolor=edge_color, linewidth=1.5)
                 except TypeError:
-                    obj = scene.add(polyline)
+                    obj = viewport.add(polyline)
                 if obj is not None:
                     points = np.array([[p.x, p.y, p.z] for p in polyline.points], dtype=float)
                     self._step_entity_info[id(obj)] = {"type": "edge", "index": i, "points": points}
 
             for i, point in enumerate(result.vertex_points):
                 try:
-                    obj = scene.add(point, pointcolor=vertex_color, pointsize=8)
+                    obj = viewport.add(point, pointcolor=vertex_color, pointsize=8)
                 except TypeError:
-                    obj = scene.add(point)
+                    obj = viewport.add(point)
                 if obj is not None:
                     points = np.array([[point.x, point.y, point.z]], dtype=float)
                     self._step_entity_info[id(obj)] = {"type": "vertex", "index": i, "points": points}
@@ -390,9 +389,7 @@ class StepViewerMixin:
             # from whatever existed at initializeGL() time. rebuild_buffers()
             # is the method that checks for any object with obj._inited
             # still False and initializes it, then rebuilds the buffer data.
-            self._step_preview_renderer.makeCurrent()
-            self._step_preview_renderer.rebuild_buffers()
-            self._step_preview_renderer.doneCurrent()
+            viewport.refresh(rebuild=True)
 
             # Force a real paint pass now that the geometry is in the scene.
             self._step_preview_renderer.update()

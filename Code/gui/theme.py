@@ -210,7 +210,7 @@ QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
     border: 0;
     border-left: 1px solid {COLORS['border']};
 }}
-QTableWidget {{
+QTableWidget, QTableView {{
     color: {COLORS['text']};
     background: #1B2026;
     alternate-background-color: #20272E;
@@ -220,7 +220,7 @@ QTableWidget {{
     selection-color: #FFFFFF;
     selection-background-color: #31576D;
 }}
-QTableWidget::item {{
+QTableWidget::item, QTableView::item {{
     padding: 4px;
 }}
 QHeaderView::section {{

@@ -1,6 +1,7 @@
 """Bridge between GUI interactions and the persistent Project domain model."""
 
 from pathlib import Path
+from copy import deepcopy
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
@@ -15,6 +16,8 @@ from tolstack import (
 from tolstack.domain import new_id
 from tolstack.features import FeatureSignature, match_signature, signature_from_points
 from tolstack.gdt import PatternFeature, PatternPositionControl
+from tolstack.workflow import validate_workspace_project, require_supported_distribution
+from gui.analysis_mixin import AnalysisMixin
 
 
 class ProjectMixin:
@@ -67,6 +70,7 @@ class ProjectMixin:
         self.drf_status_label.setText("Datum reference frame not built yet.")
         self.clear_step_preview()
         self._project_update_title()
+        self._study_restore()
 
     def open_project(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -76,6 +80,7 @@ class ProjectMixin:
             return
         try:
             project = Project.load(path)
+            validate_workspace_project(project)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             QMessageBox.warning(self, "Could not open project", str(exc))
             return
@@ -93,6 +98,7 @@ class ProjectMixin:
         self._active_position_control_id = next(iter(project.position_controls), None)
         self._entity_by_feature_id = {}
         self._project_restore_stack_to_ui()
+        self._study_restore()
         self.pattern_table.setRowCount(0)
         for slot in ("Primary", "Secondary", "Tertiary"):
             self._datum_slot[slot] = None
@@ -128,12 +134,22 @@ class ProjectMixin:
         self._project_save_to(path)
 
     def _project_save_to(self, path: str):
+        previous = deepcopy(self.project)
         try:
+            self._study_capture()
+            datum_count = sum(entry is not None for entry in self._datum_slot.values())
+            if datum_count not in (0, 3) or (self.project.datum_systems and datum_count != 3):
+                raise ValueError("Complete the A/B/C datum selection before saving. The existing saved datum system has not been replaced.")
+            if self.project.position_controls and not self.pattern_table.rowCount():
+                if any(member.feature_id not in self._entity_by_feature_id
+                       for control in self.project.position_controls.values() for member in control.members):
+                    raise ValueError("Reattach the saved pattern geometry before saving; unresolved definitions must not be discarded.")
             self._project_sync_stack_from_ui()
             self._project_sync_datums_from_ui()
             self._project_sync_position_from_ui()
             self.project.save(path)
         except (OSError, ValueError) as exc:
+            self.project = previous
             QMessageBox.warning(self, "Could not save project", str(exc))
             return
         self._project_path = path
@@ -262,6 +278,7 @@ class ProjectMixin:
     # ------------------------------------------------------------------
 
     def _project_sync_stack_from_ui(self):
+        dimensions = AnalysisMixin._build_stack(self).dimensions
         stack = next(iter(self.project.stacks.values()), None)
         if stack is None:
             stack = LinearStackDefinition("Main stack")
@@ -269,20 +286,14 @@ class ProjectMixin:
 
         previous_tolerance_ids = {term.tolerance_id for term in stack.terms}
         terms = []
-        for row in range(self.table.rowCount()):
+        for row, dimension in enumerate(dimensions):
             name_item = self.table.item(row, 0)
-            if name_item is None:
-                continue
-            name = name_item.text().strip() or f"Dimension {row + 1}"
-            nominal = float(self.table.item(row, 1).text())
-            tol_plus = float(self.table.item(row, 2).text())
-            tol_minus = float(self.table.item(row, 3).text())
-            sign = 1 if self._get_sign_from_row(row) == "+" else -1
-            cpk_item = self.table.item(row, 5)
-            cpk_text = cpk_item.text().strip() if cpk_item else ""
+            name, nominal = dimension.name, dimension.nominal
+            tol_plus, tol_minus = dimension.tol_plus, dimension.tol_minus
+            sign = 1 if dimension.sign == "+" else -1
             distribution = (
-                Distribution("normal", {"cpk": float(cpk_text)})
-                if cpk_text else Distribution("uniform")
+                Distribution("normal", {"cpk": dimension.cpk})
+                if dimension.cpk is not None else Distribution("uniform")
             )
             link = name_item.data(self.LINK_ROLE) or {}
             feature_id = link.get("feature_id")
@@ -556,6 +567,15 @@ class ProjectMixin:
         return float(value) if value is not None else None
 
     def _project_build_pattern_control(self) -> PatternPositionControl:
+        if self._current_drf is None or any(entry is None for entry in getattr(self, "_datum_slot", {}).values()):
+            raise ValueError("Build a complete datum reference frame before evaluation.")
+        if self.project.units.length != "mm" or self.project.units.angle != "deg":
+            raise ValueError("CAD/GD&T analysis currently requires mm and deg. Automatic conversion is not implemented.")
+        for system in self.project.datum_systems.values():
+            if any(self.project.datum_references[ref].modifier != "RFS" for ref in system.datum_reference_ids):
+                raise ValueError("Datum material-boundary modifiers and datum mobility are not supported.")
+        for tolerance in self.project.tolerances.values():
+            require_supported_distribution(tolerance.distribution, tolerance.name)
         self._project_sync_datums_from_ui()
         self._project_sync_position_from_ui()
         control = self.project.position_controls.get(self._active_position_control_id)

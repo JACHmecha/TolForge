@@ -13,31 +13,10 @@ import os
 import sys
 from pathlib import Path
 
-# Windows-only: Python 3.8+ no longer searches PATH for the DLLs a C-extension
-# depends on (a deliberate security change). If compas_occ was built from
-# source against a manually-built OCCT (rather than the conda-forge prebuilt
-# package), OCCT's DLLs live in a location Python won't find on its own, so
-# we register them explicitly before compas_occ ever gets imported. STEP
-# reading specifically (OCC.Core.STEPControl) transitively needs FreeType and
-# TCL/TK runtime DLLs in addition to OCCT's own toolkits - found via
-# `dumpbin /dependents` tracing, since the basic gp/math modules load fine
-# without them but STEPControl does not. These paths are specific to a
-# from-source OCCT build and won't exist/won't be needed on machines using
-# the conda-forge compas_occ package instead.
-#
-# Local source runtime: D:\PROGRAMS\PYTHON\python.exe (Python 3.10).
-# Package metadata currently requires 3.11+; see docs/development.md for
-# that discrepancy and the local CAD/DLL environment before switching Python.
-if os.name == "nt":
-    for _dll_dir in (
-        r"D:\GIT\REPOS\occt-install\win64\vc14\bin",
-        r"D:\GIT\REPOS\3rdparty-vc14-64\3rdparty-vc14-64\freetype-2.13.3-x64\bin",
-        r"D:\GIT\REPOS\3rdparty-vc14-64\3rdparty-vc14-64\tcltk-8.6.15-x64\bin",
-    ):
-        if Path(_dll_dir).is_dir():
-            os.add_dll_directory(_dll_dir)
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from gui.runtime import configure_native_runtime
+configure_native_runtime()
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -65,13 +44,15 @@ from gui.project_mixin import ProjectMixin
 from gui.theme import apply_application_palette, apply_window_theme, style_figure
 from gui.offset_preview import OffsetControls
 from gui.datum_inspection import DATUM_STYLES
+from gui.stack_table import StackTableView
+from gui.study_mixin import StudyMixin
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "+/-", "Cpk"]
 
 
 class TolstackWindow(
     QMainWindow, StepViewerMixin, DimensionBankMixin, AnalysisMixin,
-    MeasurementMixin, EclipseMixin, GdtMixin, StackLinkMixin, ProjectMixin,
+    MeasurementMixin, EclipseMixin, GdtMixin, StackLinkMixin, ProjectMixin, StudyMixin,
 ):
     def __init__(self):
         super().__init__()
@@ -187,7 +168,7 @@ class TolstackWindow(
         self.stack_tab = stack_tab
         stack_layout = QVBoxLayout(stack_tab)
 
-        self.table = QTableWidget(0, len(COLUMNS) + 1)  # +1 for the 3D-link Value column
+        self.table = StackTableView(0, len(COLUMNS) + 1)  # +1 for the 3D-link Value column
         self.table.setHorizontalHeaderLabels(COLUMNS + ["3D Value"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setMinimumSectionSize(50)
@@ -687,6 +668,9 @@ class TolstackWindow(
         eval_btn_row.addWidget(eval_nominal_btn)
         eval_btn_row.addWidget(eval_mc_btn)
         gdt_layout.addLayout(eval_btn_row)
+        export_gdt_btn = QPushButton("Export CAD position report")
+        export_gdt_btn.clicked.connect(self._export_gdt_report)
+        gdt_layout.addWidget(export_gdt_btn)
 
         gdt_results_box = QFrame()
         gdt_results_box.setFrameShape(QFrame.StyledPanel)
@@ -723,6 +707,7 @@ class TolstackWindow(
         gdt_scroll.setWidget(gdt_tab)
         gdt_scroll.setFrameShape(QFrame.NoFrame)
         sidebar.addTab(gdt_scroll, "GD&T Position")
+        sidebar.addTab(self._create_study_page(), "Study")
 
         # Persistent navigation also exposes measurement without requiring
         # users to discover the viewport context menu first.
@@ -741,6 +726,7 @@ class TolstackWindow(
         self.workspace_button_group.setExclusive(True)
         self.workspace_buttons = {}
         self.workspace_pages = {
+            "study": self.study_tab,
             "inspect": inspector_tab,
             "library": bank_tab,
             "stack": stack_tab,
@@ -752,7 +738,7 @@ class TolstackWindow(
         for key, caption in (
             ("inspect", "Inspect"), ("library", "Library"),
             ("stack", "Stack"), ("results", "Results"),
-            ("measure", "Measure"), ("gdt", "GD&T"), ("eclipse", "Eclipse"),
+            ("measure", "Measure"), ("gdt", "GD&T"), ("study", "Study"), ("eclipse", "Eclipse"),
         ):
             button = QPushButton(caption)
             button.setCheckable(True)
@@ -769,6 +755,7 @@ class TolstackWindow(
         root_layout.addWidget(workspace_rail, stretch=0)
 
         self.workspace_titles = {
+            "study": ("Drawing conformance study", "Define evidence, validate inputs, evaluate supported checks and report."),
             "inspect": ("Feature inspector", "Select geometry to inspect its properties and engineering links."),
             "library": ("Dimension library", "Reuse dimensions across your tolerance stacks."),
             "stack": ("Tolerance stack", "Define dimensions, signs, and manufacturing tolerances."),
@@ -850,6 +837,17 @@ class TolstackWindow(
         analysis_settings_layout.addWidget(self.range_min_input, 3, 1)
         analysis_settings_layout.addWidget(QLabel("Acceptance max"), 4, 0)
         analysis_settings_layout.addWidget(self.range_max_input, 4, 1)
+        self.response_name_input = QLineEdit("Functional response")
+        self.seed_input = QLineEdit()
+        self.seed_input.setPlaceholderText("blank = random")
+        self.seed_input.setToolTip("Shared Monte Carlo seed for stack and CAD position prediction (0–4294967295).")
+        analysis_settings_layout.addWidget(QLabel("Response name"), 5, 0)
+        analysis_settings_layout.addWidget(self.response_name_input, 5, 1)
+        analysis_settings_layout.addWidget(QLabel("Study random seed"), 6, 0)
+        analysis_settings_layout.addWidget(self.seed_input, 6, 1)
+        export_stack_btn = QPushButton("Export stack report")
+        export_stack_btn.clicked.connect(self._export_stack_report)
+        analysis_settings_layout.addWidget(export_stack_btn, 7, 0, 1, 2)
         results_layout.insertWidget(0, analysis_settings)
 
         view_controls = QFrame()
@@ -957,6 +955,23 @@ class TolstackWindow(
         self._seed_bank()
         self._project_install_menu()
         self._project_update_title()
+        self._study_restore()
+        self.table.itemChanged.connect(self._invalidate_stack_report)
+        self.table.model().rowsRemoved.connect(self._invalidate_stack_report)
+        self.table.model().rowsInserted.connect(self._invalidate_stack_report)
+        for widget in (self.default_cpk_input, self.seed_input, self.response_name_input):
+            widget.textChanged.connect(self._invalidate_stack_report)
+        self.method_combo.currentTextChanged.connect(self._invalidate_stack_report)
+        self.iterations_input.valueChanged.connect(self._invalidate_stack_report)
+        self.pattern_table.itemChanged.connect(self._invalidate_gdt_results)
+        self.pattern_table.model().rowsRemoved.connect(self._invalidate_gdt_results)
+        self.pattern_table.model().rowsInserted.connect(self._invalidate_gdt_results)
+        for widget in (self.gdt_base_tolerance_input, self.gdt_mmc_size_input,
+                       self.gdt_lmc_size_input, self.gdt_default_cpk_input, self.seed_input):
+            widget.textChanged.connect(self._invalidate_gdt_results)
+        self.gdt_modifier_combo.currentTextChanged.connect(self._invalidate_gdt_results)
+        self.gdt_feature_kind_combo.currentTextChanged.connect(self._invalidate_gdt_results)
+        self.gdt_iterations_input.valueChanged.connect(self._invalidate_gdt_results)
         self._show_workspace("inspect")
         apply_window_theme(self)
 
@@ -1020,6 +1035,12 @@ class TolstackWindow(
 
 
 def main():
+    if "--self-check-json" in sys.argv:
+        from gui.runtime import run_packaged_smoke_check
+        index = sys.argv.index("--self-check-json")
+        if index + 1 >= len(sys.argv):
+            raise SystemExit("--self-check-json requires an output path")
+        raise SystemExit(run_packaged_smoke_check(sys.argv[index + 1], include_cad="--self-check-cad" in sys.argv))
     # compas_viewer's Renderer widget internally accesses a Viewer() singleton
     # (via compas_viewer.base.Base.viewer), and Viewer.__init__ unconditionally
     # creates its own QApplication(sys.argv) the first time it's instantiated.

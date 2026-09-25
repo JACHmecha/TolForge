@@ -26,6 +26,8 @@ material-boundary shift is modeled.
 """
 
 from dataclasses import dataclass
+from math import isfinite
+from numbers import Integral
 from typing import Literal
 import numpy as np
 
@@ -284,6 +286,13 @@ def evaluate_position(
     actual_size: float, mmc_size: float, lmc_size: float,
     modifier: Modifier = "RFS", feature_kind: FeatureKind = "hole",
 ) -> PositionEvaluation:
+    for value in (dx, dy, base_tolerance_diameter, actual_size, mmc_size, lmc_size):
+        if not isfinite(value):
+            raise ValueError("Position inputs must be finite.")
+    if base_tolerance_diameter < 0:
+        raise ValueError("Position tolerance diameter cannot be negative.")
+    if modifier not in ("RFS", "MMC", "LMC"):
+        raise ValueError("Unsupported position modifier.")
     error = position_error(dx, dy)
     lower_size, upper_size = size_limits(mmc_size, lmc_size, feature_kind)
     bounded_size = float(np.clip(actual_size, lower_size, upper_size))
@@ -387,23 +396,24 @@ class PatternFeature:
     position_tol_minus_y: float = 0.0
     position_cpk: float | None = None
 
-    def _sample(self, nominal, tol_plus, tol_minus, cpk, default_cpk, iterations):
+    def _sample(self, nominal, tol_plus, tol_minus, cpk, default_cpk, iterations, rng=None):
+        random = np.random if rng is None else rng
         cpk = cpk if cpk is not None else default_cpk
         if cpk is None:
-            return np.random.uniform(nominal - tol_minus, nominal + tol_plus, iterations)
+            return random.uniform(nominal - tol_minus, nominal + tol_plus, iterations)
         if cpk <= 0:
             raise ValueError(f"Cpk for '{self.name}' must be > 0, not {cpk}.")
         sigma_plus, sigma_minus = tol_plus / (3 * cpk), tol_minus / (3 * cpk)
-        z = np.random.standard_normal(iterations)
+        z = random.standard_normal(iterations)
         return nominal + np.where(z >= 0, z * sigma_plus, z * sigma_minus)
 
-    def sample_size(self, iterations: int, default_cpk: float | None = None) -> np.ndarray:
+    def sample_size(self, iterations: int, default_cpk: float | None = None, rng=None) -> np.ndarray:
         return self._sample(
             self.size_nominal, self.size_tol_plus, self.size_tol_minus,
-            self.size_cpk, default_cpk, iterations,
+            self.size_cpk, default_cpk, iterations, rng,
         )
 
-    def sample_position(self, iterations: int, default_cpk: float | None = None) -> tuple:
+    def sample_position(self, iterations: int, default_cpk: float | None = None, rng=None) -> tuple:
         """Samples the manufactured position AROUND this feature's actual
         (as-measured/as-modeled) location - i.e. this treats `actual_x/y`
         as the process's own nominal aim point, with
@@ -412,8 +422,8 @@ class PatternFeature:
         (non-statistical) as-measured location instead.
         """
         cpk = self.position_cpk if self.position_cpk is not None else default_cpk
-        x = self._sample(self.actual_x, self.position_tol_plus_x, self.position_tol_minus_x, cpk, default_cpk, iterations)
-        y = self._sample(self.actual_y, self.position_tol_plus_y, self.position_tol_minus_y, cpk, default_cpk, iterations)
+        x = self._sample(self.actual_x, self.position_tol_plus_x, self.position_tol_minus_x, cpk, default_cpk, iterations, rng)
+        y = self._sample(self.actual_y, self.position_tol_plus_y, self.position_tol_minus_y, cpk, default_cpk, iterations, rng)
         return x, y
 
 
@@ -427,12 +437,40 @@ class PatternPositionControl:
     feature_kind: FeatureKind = "hole"
 
 
+def validate_pattern_control(control: PatternPositionControl):
+    if not control.features:
+        raise ValueError("A position pattern needs at least one feature.")
+    if control.modifier not in ("RFS", "MMC", "LMC"):
+        raise ValueError("Unsupported position modifier.")
+    for value in (control.base_tolerance_diameter, control.mmc_size, control.lmc_size):
+        if not isfinite(value):
+            raise ValueError("Position callout inputs must be finite.")
+    if control.base_tolerance_diameter < 0:
+        raise ValueError("Position tolerance diameter cannot be negative.")
+    size_limits(control.mmc_size, control.lmc_size, control.feature_kind)
+    names = set()
+    for feature in control.features:
+        if not feature.name.strip() or feature.name in names:
+            raise ValueError("Pattern feature names must be nonempty and unique.")
+        names.add(feature.name)
+        for name, value in vars(feature).items():
+            if name == "name" or value is None:
+                continue
+            if not isfinite(value):
+                raise ValueError(f"{feature.name}: {name} must be finite.")
+            if "tol_" in name and value < 0:
+                raise ValueError(f"{feature.name}: tolerance magnitudes cannot be negative.")
+            if name.endswith("cpk") and value <= 0:
+                raise ValueError(f"{feature.name}: Cpk must be positive.")
+
+
 def evaluate_pattern_nominal(control: PatternPositionControl) -> list:
     """Deterministic, single-point evaluation (no sampling) - each
     feature's as-measured/as-modeled location and nominal size checked
     once against the callout. Useful for validating a single STEP/CAD
     model or a single inspected part, as opposed to predicting
     production conformance."""
+    validate_pattern_control(control)
     results = []
     for feature in control.features:
         dx = feature.actual_x - feature.basic_x
@@ -456,7 +494,8 @@ class PatternMonteCarloResult:
 
 
 def run_pattern_monte_carlo(
-    control: PatternPositionControl, iterations: int = 10000, default_cpk: float | None = None
+    control: PatternPositionControl, iterations: int = 10000, default_cpk: float | None = None,
+    *, seed: int | None = None,
 ) -> PatternMonteCarloResult:
     """Each feature's position and size are sampled independently (no
     shared/common-cause variation across the pattern is modeled - e.g. a
@@ -467,6 +506,14 @@ def run_pattern_monte_carlo(
     sample - that's the correct definition of pattern conformance, even
     though each feature is sampled independently.
     """
+    validate_pattern_control(control)
+    if isinstance(iterations, bool) or not isinstance(iterations, Integral) or iterations <= 0:
+        raise ValueError("Iterations must be a positive integer.")
+    if default_cpk is not None and (not isfinite(default_cpk) or default_cpk <= 0):
+        raise ValueError("Default Cpk must be finite and positive.")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, Integral) or not 0 <= seed <= 2**32 - 1):
+        raise ValueError("Seed must be an integer from 0 to 4294967295.")
+    rng = np.random.default_rng(seed) if seed is not None else None
     n = len(control.features)
     margins = np.empty((n, iterations))
     per_feature_fail_rate = {}
@@ -478,8 +525,8 @@ def run_pattern_monte_carlo(
     )
 
     for i, feature in enumerate(control.features):
-        sizes = feature.sample_size(iterations, default_cpk)
-        xs, ys = feature.sample_position(iterations, default_cpk)
+        sizes = feature.sample_size(iterations, default_cpk, rng)
+        xs, ys = feature.sample_position(iterations, default_cpk, rng)
         dxs = xs - feature.basic_x
         dys = ys - feature.basic_y
 

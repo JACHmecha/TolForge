@@ -4,7 +4,11 @@ the interactive histogram (draggable interval lines) for TolstackWindow.
 
 from PySide6.QtWidgets import QMessageBox
 
-from tolstack import Stack, Dimension
+from tolstack import Stack
+from tolstack.analysis import (
+    AnalysisSettings, analyze_stack, build_stack, parse_optional_cpk,
+    parse_seed, update_report_limits,
+)
 from gui.theme import COLORS, style_axes
 
 
@@ -23,51 +27,20 @@ class AnalysisMixin:
     # ------------------------------------------------------------------
 
     def _build_stack(self) -> Stack:
-        stack = Stack()
+        rows = []
         for r in range(self.table.rowCount()):
-            try:
-                name = self.table.item(r, 0).text().strip()
-                nominal = float(self.table.item(r, 1).text())
-                tol_plus = float(self.table.item(r, 2).text())
-                tol_minus = float(self.table.item(r, 3).text())
-                sign = self._get_sign_from_row(r)
-            except (AttributeError, ValueError):
-                raise ValueError(f"Row {r + 1} has invalid or incomplete data.")
-
-            if sign not in {"+", "-"}:
-                raise ValueError(f"Row {r + 1}: sign must be '+' or '-', not {sign}.")
-
-            # Cpk column is optional: empty or missing cell -> None (uniform)
-            cpk_item = self.table.item(r, 5)
-            cpk_text = cpk_item.text().strip() if cpk_item else ""
-            if cpk_text == "":
-                cpk = None
-            else:
-                try:
-                    cpk = float(cpk_text)
-                except ValueError:
-                    raise ValueError(f"Row {r + 1}: Cpk '{cpk_text}' is not a valid number.")
-                if cpk <= 0:
-                    raise ValueError(f"Row {r + 1}: Cpk must be greater than 0, not {cpk}.")
-
-            stack.add_dimension(Dimension(
-                name=name, nominal=nominal,
-                tol_plus=tol_plus, tol_minus=tol_minus, sign=sign, cpk=cpk
-            ))
-        return stack
+            def text(column):
+                item = self.table.item(r, column)
+                return item.text().strip() if item else ""
+            rows.append({
+                "name": text(0), "nominal": text(1), "tol_plus": text(2),
+                "tol_minus": text(3), "sign": self._get_sign_from_row(r), "cpk": text(5),
+            })
+        return build_stack(rows)
 
     def _get_default_cpk(self) -> float | None:
         """Reads the global Cpk field. Empty -> None (no default, falls back to uniform)."""
-        text = self.default_cpk_input.text().strip()
-        if text == "":
-            return None
-        try:
-            value = float(text)
-        except ValueError:
-            raise ValueError(f"Global Cpk '{text}' is not a valid number.")
-        if value <= 0:
-            raise ValueError(f"Global Cpk must be greater than 0, not {value}.")
-        return value
+        return parse_optional_cpk(self.default_cpk_input.text(), "Global Cpk")
 
     def _get_iterations(self) -> int:
         return int(self.iterations_input.value())
@@ -83,12 +56,22 @@ class AnalysisMixin:
         try:
             lower, upper = self._get_range_bounds()
         except ValueError:
+            self._last_analysis_report = None
+            self._last_samples = None
+            self._last_monte_carlo_payload = None
+            self.canvas.setVisible(False)
+            self.result_label.setText("Functional limits are invalid. Correct the limits and run analysis again.")
             return
 
         self.interval_min_value = lower
         self.interval_max_value = upper
         self._update_interval_lines()
-        self._refresh_interval_summary(self._last_samples)
+        report = getattr(self, "_last_analysis_report", None)
+        if report is not None and report.settings.method != "monte_carlo":
+            self._last_analysis_report = update_report_limits(report, lower, upper)
+            self._show_stack_result(report.result, report.fit_at_zero)
+        else:
+            self._refresh_interval_summary(self._last_samples)
         self.figure.canvas.draw_idle()
 
     def _update_interval_lines(self):
@@ -109,21 +92,21 @@ class AnalysisMixin:
         except ValueError:
             return
 
-        inside_count, outside_count, inside_percentage, outside_percentage = self._get_interval_stats(samples, lower, upper)
-        model_lines = self._last_monte_carlo_payload["model_lines"]
-        result = self._last_monte_carlo_payload["result"]
-        fit = self._last_monte_carlo_payload["fit"]
+        report = update_report_limits(self._last_monte_carlo_payload["report"], lower, upper)
+        self._last_monte_carlo_payload["report"] = report
+        self._last_analysis_report = report
+        result = report.result
+        seed = report.settings.seed
 
         self.result_label.setText(
-            f"Monte Carlo ({len(samples):,} iterations)\n"
-            + "\n".join(model_lines) + "\n"
+            f"{report.settings.response_name}\n"
+            f"Monte Carlo ({len(samples):,} samples; seed: {seed if seed is not None else 'random'})\n"
             f"{'-' * 30}\n"
             f"Mean       : {result.mean:.4f}\n"
             f"Std Dev    : {result.std_dev:.4f}\n"
-            f"Range      : [{lower:.4f}, {upper:.4f}]\n"
-            f"In range   : {inside_count:,}/{len(samples):,} ({inside_percentage:.2f}%)\n"
-            f"Out of range: {outside_count:,}/{len(samples):,} ({outside_percentage:.2f}%)\n"
-            + self._fit_text(fit)
+            + self._acceptance_text(report) + "\n"
+            + self._contribution_text(report) + "\n"
+            + self._fit_text(report.fit_at_zero)
         )
 
     def _get_interval_stats(self, samples, lower: float, upper: float):
@@ -183,58 +166,71 @@ class AnalysisMixin:
     # ------------------------------------------------------------------
 
     def run_analysis(self):
+        self._last_analysis_report = None
+        self._last_samples = None
+        self._last_monte_carlo_payload = None
         try:
             stack = self._build_stack()
             lower, upper = self._get_range_bounds()
+            seed_widget = getattr(self, "seed_input", None)
+            response_widget = getattr(self, "response_name_input", None)
+            settings = AnalysisSettings(
+                method=self.method_combo.currentText(), lower_limit=lower, upper_limit=upper,
+                iterations=self._get_iterations(), default_cpk=self._get_default_cpk(),
+                seed=parse_seed(seed_widget.text()) if seed_widget is not None else None,
+                response_name=response_widget.text() if response_widget is not None else "Functional response",
+            )
+            report = analyze_stack(stack, settings)
         except ValueError as e:
+            self.canvas.setVisible(False)
+            self.result_label.setText("Analysis needs valid inputs. Correct the reported issue and run again.")
             QMessageBox.warning(self, "Invalid data", str(e))
             return
 
-        if not stack.dimensions:
-            QMessageBox.warning(self, "No data", "Add at least one dimension.")
-            return
-
-        method = self.method_combo.currentText()
-
-        if method == "worst_case":
-            result = stack.worst_case()
-            fit = stack.assess_fit(result, target=0.0)
-            self._show_stack_result(result, fit)
+        self._last_analysis_report = report
+        if settings.method != "monte_carlo":
+            self._show_stack_result(report.result, report.fit_at_zero)
             self.canvas.setVisible(False)
-
-        elif method == "rss":
-            result = stack.rss()
-            fit = stack.assess_fit(result, target=0.0)
-            self._show_stack_result(result, fit)
-            self.canvas.setVisible(False)
-
-        elif method == "monte_carlo":
-            try:
-                default_cpk = self._get_default_cpk()
-            except ValueError as e:
-                QMessageBox.warning(self, "Invalid global Cpk", str(e))
-                return
-
-            iterations = self._get_iterations()
-            result = stack.monte_carlo(iterations=iterations, default_cpk=default_cpk)
-            fit = stack.assess_fit(result, target=0.0)
-
-            model_lines = []
-            for d in stack.dimensions:
-                cpk = d.cpk if d.cpk is not None else default_cpk
-                model = f"Cpk={cpk}" if cpk is not None else "uniform"
-                model_lines.append(f"  {d.name}: {model}")
-
-            self._last_samples = result.samples
-            self._last_monte_carlo_payload = {"model_lines": model_lines, "result": result, "fit": fit}
-            self._plot_histogram(result.samples)
-            self._refresh_interval_summary(result.samples)
+        else:
+            self._last_samples = report.result.samples
+            self._last_monte_carlo_payload = {"report": report, "result": report.result, "fit": report.fit_at_zero}
+            self._plot_histogram(report.result.samples)
+            self._refresh_interval_summary(report.result.samples)
             self.canvas.setVisible(True)
+
+    def _acceptance_text(self, report) -> str:
+        acceptance = report.acceptance
+        lower = f"{acceptance.lower_limit:.4f}" if acceptance.lower_limit is not None else "unbounded"
+        upper = f"{acceptance.upper_limit:.4f}" if acceptance.upper_limit is not None else "unbounded"
+        lines = [f"Functional limits: [{lower}, {upper}]"]
+        if acceptance.rejected_count is not None:
+            accepted = acceptance.sample_count - acceptance.rejected_count
+            lines += [
+                f"Sample yield: {100 * (1 - acceptance.rejection_probability):.2f}% ({accepted:,}/{acceptance.sample_count:,})",
+                f"Rejects: {acceptance.rejected_count:,} ({acceptance.rejection_ppm:.1f} observed PPM)",
+                "Finite sample estimate; zero rejects does not establish six sigma.",
+            ]
+        else:
+            basis = "RSS estimated band" if report.settings.method == "rss" else "Worst-case band"
+            lines.append(f"{basis}: {acceptance.status.replace('_', ' ')}")
+            if report.settings.method == "rss":
+                lines.append("RSS does not predict a calibrated yield.")
+        return "\n".join(lines)
+
+    def _contribution_text(self, report) -> str:
+        lines = [f"{'-' * 30}", "Variance contributors (independent scalar model):"]
+        if not any(item.response_variance for item in report.contributions):
+            lines.append("  No modeled variation.")
+        for item in report.contributions:
+            model = "uniform" if item.cpk is None else f"Cpk assumption {item.cpk:g}"
+            lines.append(f"  {item.name}: {item.variance_fraction * 100:.1f}% (sensitivity {item.sensitivity:+d}; {model})")
+        return "\n".join(lines)
 
     def _fit_text(self, fit) -> str:
         lines = [
             f"{'-' * 30}",
-            f"Verdict      : {fit.verdict.upper()}",
+            "Separate zero-clearance fit check:",
+            f"Fit          : {fit.verdict.upper()}",
             f"Margin (min) : {fit.margin_min:+.4f}",
             f"Margin (max) : {fit.margin_max:+.4f}",
         ]
@@ -243,13 +239,16 @@ class AnalysisMixin:
         return "\n".join(lines)
 
     def _show_stack_result(self, result, fit):
+        report = getattr(self, "_last_analysis_report", None)
         self.result_label.setText(
-            f"{'-' * 30}\n"
+            (f"{report.settings.response_name}\n" if report is not None else "")
+            + f"{'-' * 30}\n"
             f"Nominal : {result.nominal:.4f}\n"
             f"Maximum : {result.upper_limit:.4f}\n"
             f"Minimum : {result.lower_limit:.4f}\n"
             f"+Tol    : {result.upper_limit - result.nominal:.4f}\n"
             f"-Tol    : {result.nominal - result.lower_limit:.4f}\n"
+            + (self._acceptance_text(report) + "\n" + self._contribution_text(report) + "\n" if report is not None else "")
             + self._fit_text(fit)
         )
 

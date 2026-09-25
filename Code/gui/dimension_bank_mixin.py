@@ -4,7 +4,7 @@ TolstackWindow.
 """
 
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QInputDialog, QMessageBox, QTableWidgetItem
+    QFileDialog, QInputDialog, QMessageBox
 )
 
 from tolstack import DimensionBank, DimensionTemplate
@@ -34,7 +34,7 @@ class DimensionBankMixin:
                 if c == 4:
                     self._set_sign_switch(r, v)
                 else:
-                    self.table.setItem(r, c, QTableWidgetItem(str(v)))
+                    self.table.set_text(r, c, v)
 
     def _seed_bank(self):
         for name, nominal, tol_plus, tol_minus, cpk in [
@@ -62,39 +62,10 @@ class DimensionBankMixin:
             self.table.removeRow(row)
 
     def _set_sign_switch(self, row: int, sign: str | int):
-        existing = self.table.cellWidget(row, 4)
-        if isinstance(existing, QCheckBox):
-            existing.setChecked(sign in {1, "+"})
-            return
-        checkbox = QCheckBox()
-        checkbox.setChecked(sign in {1, "+"})
-        checkbox.setText("+" if checkbox.isChecked() else "−")
-        checkbox.toggled.connect(
-            lambda checked: checkbox.setText("+" if checked else "−")
-        )
-        checkbox.setToolTip("Toggle the dimension sign")
-        checkbox.setStyleSheet(
-            "QCheckBox { padding: 2px; }"
-            "QCheckBox::indicator { width: 18px; height: 18px; border-radius: 9px; border: 1px solid #56626D; background: #FF7474; }"
-            "QCheckBox::indicator:checked { background: #67D39A; }"
-        )
-        self.table.setCellWidget(row, 4, checkbox)
+        self.table.set_sign(row, sign)
 
     def _get_sign_from_row(self, row: int) -> str:
-        widget = self.table.cellWidget(row, 4)
-        if isinstance(widget, QCheckBox):
-            return "+" if widget.isChecked() else "-"
-
-        item = self.table.item(row, 4)
-        if item is None:
-            return "+"
-
-        text = item.text().strip()
-        if text in {"+", "1", "+1"}:
-            return "+"
-        if text in {"-", "-1"}:
-            return "-"
-        raise ValueError(f"Row {row + 1}: sign must be '+' or '-', not {text}.")
+        return self.table.sign(row)
 
     def _add_table_row(self, name, nominal, tol_plus, tol_minus, sign, cpk):
         self.add_row()
@@ -105,7 +76,7 @@ class DimensionBankMixin:
             if c == 4:
                 self._set_sign_switch(r, v)
             else:
-                self.table.setItem(r, c, QTableWidgetItem(str(v)))
+                self.table.set_text(r, c, v)
 
     # ------------------------------------------------------------------
     # Dimension bank

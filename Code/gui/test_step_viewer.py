@@ -39,11 +39,13 @@ def test_detect_step_backend_flags_unsupported_alternatives(monkeypatch):
 
 def test_detect_step_backend_reports_compas_occ(monkeypatch):
     import importlib.util
+    from gui import step_renderer
 
     def fake_find_spec(name):
         return object() if name == "compas_occ" else None
 
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(step_renderer.importlib, "import_module", lambda name: object())
 
     backend, message = gui_app.detect_step_backend()
 

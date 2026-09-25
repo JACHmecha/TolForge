@@ -9,6 +9,7 @@ project definitions into nominal and Monte Carlo position/size checks.
 """
 
 import numpy as np
+from dataclasses import asdict
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QInputDialog, QTableWidgetItem
 
@@ -19,6 +20,7 @@ from tolstack.gdt import (
 )
 from gui.theme import COLORS, style_axes
 from gui.datum_inspection import DatumInspectionMixin, DATUM_STYLES
+from tolstack.analysis import parse_optional_cpk, parse_seed
 
 # Column layout for self.pattern_table - kept short since this table lives
 # in a ~350-450px sidebar; the full meaning of each is in the tab's own
@@ -188,6 +190,7 @@ class GdtMixin(DatumInspectionMixin):
         return "axis" if info["type"] == "edge" or (info.get("surface") or {}).get("kind") == "cylinder" else "plane"
 
     def _update_datum_labels(self):
+        self._invalidate_gdt_results()
         for slot, label_widget in self.datum_slot_labels.items():
             entry = self._datum_slot[slot]
             letter, _color = DATUM_STYLES[slot]
@@ -342,7 +345,44 @@ class GdtMixin(DatumInspectionMixin):
     # Evaluation
     # ------------------------------------------------------------------
 
+    def _invalidate_gdt_results(self, *args):
+        if args and hasattr(args[0], "column") and args[0].column() == 9:
+            return
+        self._last_gdt_report = None
+        for label in getattr(self, "gdt_result_labels", {}).values():
+            label.setText("Inputs changed — evaluate again.")
+        if hasattr(self, "gdt_canvas"):
+            self.gdt_canvas.setVisible(False)
+        if hasattr(self, "pattern_table"):
+            previous = self.pattern_table.blockSignals(True)
+            for row in range(self.pattern_table.rowCount()):
+                item = QTableWidgetItem("Not evaluated")
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.pattern_table.setItem(row, 9, item)
+            self.pattern_table.blockSignals(previous)
+
+    def _gdt_report_base(self, control):
+        return {
+            "report_type": "cad_position_prediction", "units": self.project.units.length,
+            "control": asdict(control), "datum_frame": {
+                name: getattr(self._current_drf, name).tolist()
+                for name in ("origin", "x_axis", "y_axis", "z_axis")
+            },
+            "cad_sources": [part.source_file for part in self.project.parts.values()],
+            "limitations": ["CAD positions are not manufactured-part measurements.",
+                            "Single-segment position and size; parallel feature axes; no datum mobility, form or general orientation.",
+                            "Independent XY/size process samples; no full assembly variation model."],
+        }
+
+    def _export_gdt_report(self):
+        report = getattr(self, "_last_gdt_report", None)
+        if report is None:
+            QMessageBox.warning(self, "No current report", "Evaluate the current CAD pattern before exporting.")
+            return
+        self._save_report(report, "cad-position-report.json")
+
     def evaluate_pattern_deterministic(self):
+        self._invalidate_gdt_results()
         if self.pattern_table.rowCount() == 0:
             QMessageBox.warning(self, "No features", "Add at least one feature to the pattern first.")
             return
@@ -372,8 +412,13 @@ class GdtMixin(DatumInspectionMixin):
                 f"position {evaluation.position_margin:+.3f} "
                 f"(bonus {evaluation.bonus_tolerance:.3f})"
             )
-            self.pattern_table.setItem(row, 9, QTableWidgetItem(text))
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.pattern_table.setItem(row, 9, item)
         self.pattern_table.resizeColumnsToContents()
+        self._last_gdt_report = self._gdt_report_base(control)
+        self._last_gdt_report.update(method="as_modeled", features=[
+            {"name": name, "evaluation": asdict(evaluation)} for name, evaluation in results])
 
         n_fail = sum(1 for _, ev in results if not ev.passes)
         self.gdt_result_labels["nominal"].setText(
@@ -393,6 +438,7 @@ class GdtMixin(DatumInspectionMixin):
             )
 
     def run_pattern_monte_carlo_analysis(self):
+        self._invalidate_gdt_results()
         if self.pattern_table.rowCount() == 0:
             QMessageBox.warning(self, "No features", "Add at least one feature to the pattern first.")
             return
@@ -403,16 +449,23 @@ class GdtMixin(DatumInspectionMixin):
             return
 
         iterations = self.gdt_iterations_input.value()
-        default_cpk_text = self.gdt_default_cpk_input.text().strip()
-        default_cpk = float(default_cpk_text) if default_cpk_text else None
-
         try:
-            mc = run_pattern_monte_carlo(control, iterations=iterations, default_cpk=default_cpk)
+            default_cpk = parse_optional_cpk(self.gdt_default_cpk_input.text(), "GD&T Cpk")
+            seed_widget = getattr(self, "seed_input", None)
+            seed = parse_seed(seed_widget.text()) if seed_widget is not None else None
+            mc = run_pattern_monte_carlo(control, iterations=iterations, default_cpk=default_cpk, seed=seed)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid Cpk", str(exc))
             return
 
         labels = self.gdt_result_labels
+        self._last_gdt_report = self._gdt_report_base(control)
+        self._last_gdt_report.update(
+            method="monte_carlo", iterations=iterations, default_cpk=default_cpk, seed=seed,
+            pattern_fail_rate=mc.pattern_fail_rate, per_feature_fail_rate=mc.per_feature_fail_rate,
+            per_feature_size_fail_rate=mc.per_feature_size_fail_rate,
+            per_feature_position_fail_rate=mc.per_feature_position_fail_rate,
+        )
         labels["pattern_fail_rate"].setText(f"{mc.pattern_fail_rate * 100:.2f} % of samples have >=1 feature out of tolerance")
         per_feature_text = ", ".join(
             f"{name}: total {rate*100:.2f}% "

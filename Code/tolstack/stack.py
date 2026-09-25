@@ -6,9 +6,13 @@ offers the three analysis methods: worst_case, rss, and monte_carlo.
 """
 
 from dataclasses import dataclass, field
+from math import hypot
 import numpy as np
 
-from .models import Dimension, StackResult, MonteCarloResult, FitAssessment
+from .models import (
+    Dimension, StackResult, MonteCarloResult, FitAssessment,
+    finite_number, parse_optional_cpk, validated_dimension,
+)
 
 # Valid methods for summary(); normalized to lowercase before comparing.
 _VALID_METHODS = ("worst_case", "rss", "monte_carlo")
@@ -30,7 +34,10 @@ class Stack:
 
     def nominal(self):
         """Calculates the resulting nominal dimension."""
-        return sum(self._sign_multiplier(d.sign) * d.nominal for d in self.dimensions)
+        return sum(self._sign_multiplier(d.sign) * d.nominal for d in self._validated_dimensions())
+
+    def _validated_dimensions(self) -> list[Dimension]:
+        return [validated_dimension(d, f"Row {i + 1}") for i, d in enumerate(self.dimensions)]
 
     @staticmethod
     def _sign_multiplier(sign: str | int) -> int:
@@ -46,7 +53,7 @@ class Stack:
         upper = nominal
         lower = nominal
 
-        for d in self.dimensions:
+        for d in self._validated_dimensions():
             if self._sign_multiplier(d.sign) > 0:
                 upper += d.tol_plus
                 lower -= d.tol_minus
@@ -62,16 +69,13 @@ class Stack:
         upper_rss = 0.0
         lower_rss = 0.0
 
-        for d in self.dimensions:
+        for d in self._validated_dimensions():
             if self._sign_multiplier(d.sign) > 0:
-                upper_rss += d.tol_plus**2
-                lower_rss += d.tol_minus**2
+                upper_rss = hypot(upper_rss, d.tol_plus)
+                lower_rss = hypot(lower_rss, d.tol_minus)
             else:
-                upper_rss += d.tol_minus**2
-                lower_rss += d.tol_plus**2
-
-        upper_rss = upper_rss**0.5
-        lower_rss = lower_rss**0.5
+                upper_rss = hypot(upper_rss, d.tol_minus)
+                lower_rss = hypot(lower_rss, d.tol_plus)
 
         return StackResult(
             nominal=nominal,
@@ -79,13 +83,16 @@ class Stack:
             lower_limit=nominal - lower_rss
         )
 
-    def monte_carlo(self, iterations=10000, default_cpk: float | None = None) -> MonteCarloResult:
+    def monte_carlo(
+        self, iterations=10000, default_cpk: float | None = None, *,
+        seed: int | None = None, rng: np.random.Generator | None = None,
+    ) -> MonteCarloResult:
         """Runs a Monte Carlo analysis of the stack-up.
 
         Per dimension, the sampling depends on `Dimension.cpk`:
         - `cpk is None` (default): uniform distribution over the entire
           tolerance range, without assuming a centered process distribution.
-        - `cpk` set (e.g. 1.33, 1.67, 2.0): split normal distribution,
+        - `cpk` set (e.g. 1.33, 1.67, 2.0): sign-scaled normal distribution,
           calibrated so the tolerance limit sits at `3 * cpk` standard
           deviations from nominal on each side. Samples are not clipped.
 
@@ -93,15 +100,30 @@ class Stack:
         value is applied instead of falling back to uniform. Useful for
         running the whole stack under a single homogeneous process
         assumption without editing every Dimension.
+
+        Pass a seed for repeatable studies or a NumPy Generator to manage an
+        external random stream. With neither, the legacy np.random stream is
+        retained for callers that already use np.random.seed().
         """
+        if isinstance(iterations, (bool, np.bool_)) or not isinstance(iterations, (int, np.integer)) or iterations <= 0:
+            raise ValueError("Iterations must be a positive integer.")
+        default_cpk = parse_optional_cpk(default_cpk, "Global Cpk")
+        if seed is not None and rng is not None:
+            raise ValueError("Provide either a seed or a random generator, not both.")
+        if seed is not None:
+            if isinstance(seed, (bool, np.bool_)) or not isinstance(seed, (int, np.integer)) or not 0 <= seed <= 2**32 - 1:
+                raise ValueError("Seed must be an integer from 0 to 4294967295.")
+        if rng is not None and not isinstance(rng, np.random.Generator):
+            raise ValueError("rng must be a NumPy Generator.")
+        random = rng if rng is not None else (np.random.default_rng(seed) if seed is not None else np.random)
         samples = np.zeros(iterations)
 
-        for d in self.dimensions:
+        for d in self._validated_dimensions():
             cpk = d.cpk if d.cpk is not None else default_cpk
             sign_multiplier = self._sign_multiplier(d.sign)
 
             if cpk is None:
-                values = np.random.uniform(
+                values = random.uniform(
                     d.nominal - d.tol_minus,
                     d.nominal + d.tol_plus,
                     iterations
@@ -111,10 +133,10 @@ class Stack:
                     raise ValueError(
                         f"Cpk for '{d.name}' must be > 0, not {cpk}."
                     )
-                sigma_plus = d.tol_plus / (3 * cpk)
-                sigma_minus = d.tol_minus / (3 * cpk)
+                sigma_plus = finite_number(d.tol_plus / 3 / cpk, f"{d.name}: positive sampling deviation")
+                sigma_minus = finite_number(d.tol_minus / 3 / cpk, f"{d.name}: negative sampling deviation")
 
-                z = np.random.standard_normal(iterations)
+                z = random.standard_normal(iterations)
                 offsets = np.where(z >= 0, z * sigma_plus, z * sigma_minus)
                 values = d.nominal + offsets
 
@@ -185,6 +207,7 @@ class Stack:
         actual point of running Monte Carlo for a fit analysis instead of
         just worst_case/rss — you get a probability, not just a verdict.
         """
+        target = finite_number(target, "Fit target")
         if isinstance(result, MonteCarloResult):
             interference_probability = float(np.mean(result.samples < target))
 

@@ -6,6 +6,7 @@ into it - see the docstrings below - that have nothing to do with the rest
 of the application and are easiest to reason about on their own.
 """
 
+import importlib
 import importlib.util
 
 
@@ -197,8 +198,11 @@ try:
             self.update()
 
     Renderer = StepPreviewRenderer
-except Exception:  # pragma: no cover - optional dependency guard
+except Exception as exc:  # pragma: no cover - optional dependency guard
     Renderer = None
+    RENDERER_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+else:
+    RENDERER_IMPORT_ERROR = None
 
 
 def detect_step_backend() -> tuple[str | None, str]:
@@ -212,7 +216,18 @@ def detect_step_backend() -> tuple[str | None, str]:
     silently pretending the preview will work.
     """
     if importlib.util.find_spec("compas_occ"):
-        return "compas_occ", "Detected compas_occ (OpenCascade) backend for STEP preview."
+        try:
+            # Finding a Python package does not prove its native DLLs load.
+            # Import the actual reader dependency before claiming readiness.
+            importlib.import_module("compas_occ.brep")
+            importlib.import_module("OCC.Core.STEPControl")
+        except Exception as exc:
+            return None, (
+                f"compas_occ is installed, but its STEP reader could not load: {exc}. "
+                "Use an activated conda-forge compas_occ environment, or configure "
+                "TOLFORGE_DLL_DIRS with your native DLL directories before launch."
+            )
+        return "compas_occ", "Loaded compas_occ (OpenCascade) STEP reader."
 
     other_found = [m for m in ("OCP", "occ", "cadquery", "ifcopenshell") if importlib.util.find_spec(m)]
     if other_found:

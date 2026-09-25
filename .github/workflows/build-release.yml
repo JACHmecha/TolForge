@@ -9,7 +9,25 @@ on:
     types: [published]
 
 jobs:
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install desktop dependencies
+        run: python -m pip install -r requirements.txt .
+      - name: Test supported Python baseline
+        run: python -m pytest -q
+
   build-windows:
+    needs: test-windows
     runs-on: windows-latest
 
     steps:
@@ -19,21 +37,27 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+      - name: Build and verify packaged executable
+        shell: pwsh
+        run: ./build_installer.ps1
 
-      - name: Build executable
-        run: |
-          python -m PyInstaller --noconfirm --clean --distpath dist --workpath build TolForge.spec
+      - name: Preserve executable and verification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: TolForge-windows
+          path: |
+            dist/TolForge.exe
+            dist/packaged-smoke.json
+            dist/pip-freeze.txt
+            dist/SHA256.txt
+          if-no-files-found: error
 
-      - name: Upload executable to release
+      - name: Upload verified executable to release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" dist/TolForge.exe --clobber
+          gh release upload "$env:RELEASE_TAG" dist/TolForge.exe dist/packaged-smoke.json dist/pip-freeze.txt dist/SHA256.txt --clobber

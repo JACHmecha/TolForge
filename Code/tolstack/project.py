@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
+from .workflow import validate_study
 
 from .domain import (
     AssemblyConstraint, DatumReference, DatumSystem, Distribution,
@@ -38,6 +39,7 @@ class Project:
     position_controls: dict[str, PositionControlDefinition] = field(default_factory=dict)
     constraints: dict[str, AssemblyConstraint] = field(default_factory=dict)
     responses: dict[str, ResponseDefinition] = field(default_factory=dict)
+    study: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.name.strip():
@@ -150,6 +152,7 @@ class Project:
             )
 
     def validate(self) -> None:
+        validate_study(self.study)
         """Validate all references, including objects loaded from JSON."""
 
         for occurrence in self.occurrences.values():
@@ -196,6 +199,7 @@ class Project:
             "position_controls": _collection_to_list(self.position_controls),
             "constraints": _collection_to_list(self.constraints),
             "responses": _collection_to_list(self.responses),
+            "study": dict(self.study),
         }
 
     @classmethod
@@ -243,6 +247,7 @@ class Project:
             ),
             constraints=_load_collection(data.get("constraints", []), AssemblyConstraint),
             responses=_load_collection(data.get("responses", []), ResponseDefinition),
+            study=dict(data.get("study", {})),
         )
         project.validate()
         return project
