@@ -14,7 +14,7 @@ import math
 
 import numpy as np
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QLabel
+from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox
 from PySide6.QtCore import Qt, QThread
 
 from compas.colors import Color
@@ -69,9 +69,9 @@ class StepViewerMixin:
         )
 
         if backend_name is None:
-            self._show_step_preview_placeholder(
-                "The STEP file was selected, but a compatible CAD backend is not available in this environment."
-            )
+            # Keep the live renderer: deleting it here leaves a stale reference
+            # and prevents a later successful load from recovering.
+            QMessageBox.warning(self, "STEP backend unavailable", backend_message)
             return
 
         self._start_step_load(path)

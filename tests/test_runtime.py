@@ -11,6 +11,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Code"))
 from gui import runtime
 
 
+def test_local_runtime_config_is_used_without_environment_override(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({"dll_directories": [str(tmp_path)]}), encoding="utf-8")
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: config)
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    assert runtime._configured_dll_directories() == [str(tmp_path)]
+    monkeypatch.setenv("TOLFORGE_DLL_DIRS", str(tmp_path / "override"))
+    assert runtime._configured_dll_directories() == [str(tmp_path / "override")]
+
+
+def test_malformed_local_config_does_not_prevent_startup(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.json"
+    config.write_text('{"dll_directories": "wrong type"}', encoding="utf-8")
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: config)
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    with pytest.warns(RuntimeWarning, match="Cannot read"):
+        assert runtime._configured_dll_directories() == []
+
+
+def test_failed_backend_check_preserves_renderer_and_reports_details(monkeypatch):
+    from types import SimpleNamespace
+    from gui import step_viewer_mixin as viewer
+    renderer = object()
+    messages = []
+    state = SimpleNamespace(_step_preview_renderer=renderer,
+                            step_status_label=SimpleNamespace(setText=lambda text: None))
+    monkeypatch.setattr(viewer.QFileDialog, "getOpenFileName", lambda *args: ("part.step", ""))
+    monkeypatch.setattr(viewer, "detect_step_backend", lambda: (None, "Missing native reader DLL"))
+    monkeypatch.setattr(viewer.QMessageBox, "warning", lambda *args: messages.append(args[-1]))
+    viewer.StepViewerMixin.load_step_file(state)
+    assert state._step_preview_renderer is renderer
+    assert messages == ["Missing native reader DLL"]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows DLL registration")
 def test_explicit_runtime_paths_remain_registered_and_are_idempotent(tmp_path, monkeypatch):
     native = tmp_path / "cad"

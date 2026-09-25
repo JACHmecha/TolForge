@@ -1,7 +1,9 @@
 """Portable startup configuration and an executable packaging smoke check.
 
 Custom Windows CAD installations can set TOLFORGE_DLL_DIRS to a semicolon-
-separated list of absolute DLL directories before launching TolForge. An
+separated list of absolute DLL directories before launching TolForge, or use
+%LOCALAPPDATA%/TolForge/runtime.json with a dll_directories array. The explicit
+environment setting takes precedence over the local file. An
 activated conda environment contributes its Library/bin directory. No paths
 from a developer's workstation are part of the application configuration.
 """
@@ -20,6 +22,29 @@ import warnings
 _DLL_HANDLES: dict[str, object] = {}
 
 
+def native_runtime_config_path() -> Path:
+    """Per-user machine configuration, kept outside shared source code."""
+    return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "TolForge" / "runtime.json"
+
+
+def _configured_dll_directories() -> list[str]:
+    explicit = os.environ.get("TOLFORGE_DLL_DIRS", "").strip()
+    if explicit:
+        return [value.strip().strip('"') for value in explicit.split(os.pathsep) if value.strip()]
+    config = native_runtime_config_path()
+    if not config.is_file():
+        return []
+    try:
+        data = json.loads(config.read_text(encoding="utf-8-sig"))
+        values = data.get("dll_directories", [])
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise ValueError("dll_directories must be a list of directory paths")
+        return values
+    except (OSError, ValueError, AttributeError) as exc:
+        warnings.warn(f"Cannot read native runtime configuration {config}: {exc}", RuntimeWarning, stacklevel=2)
+        return []
+
+
 def configure_native_runtime() -> tuple[str, ...]:
     """Register explicitly configured native dependencies, once per path.
 
@@ -30,9 +55,7 @@ def configure_native_runtime() -> tuple[str, ...]:
     if os.name != "nt":
         return ()
 
-    configured = [value.strip().strip('"') for value in
-                  os.environ.get("TOLFORGE_DLL_DIRS", "").split(os.pathsep)
-                  if value.strip()]
+    configured = _configured_dll_directories()
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
         conda_bin = Path(conda_prefix) / "Library" / "bin"

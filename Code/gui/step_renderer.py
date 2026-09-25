@@ -225,7 +225,7 @@ def detect_step_backend() -> tuple[str | None, str]:
             return None, (
                 f"compas_occ is installed, but its STEP reader could not load: {exc}. "
                 "Use an activated conda-forge compas_occ environment, or configure "
-                "TOLFORGE_DLL_DIRS with your native DLL directories before launch."
+                "TOLFORGE_DLL_DIRS or your local TolForge/runtime.json with native DLL directories before launch."
             )
         return "compas_occ", "Loaded compas_occ (OpenCascade) STEP reader."
 
