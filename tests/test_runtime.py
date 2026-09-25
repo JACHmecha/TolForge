@@ -45,6 +45,25 @@ def test_failed_backend_check_preserves_renderer_and_reports_details(monkeypatch
     assert messages == ["Missing native reader DLL"]
 
 
+def test_cad_reader_is_checked_before_native_file_dialog(monkeypatch):
+    from types import SimpleNamespace
+    from gui import step_viewer_mixin as viewer
+    events = []
+    state = SimpleNamespace(step_status_label=SimpleNamespace(setText=lambda text: None),
+                            _start_step_load=lambda path: events.append(("load", path)))
+    def backend():
+        events.append("backend")
+        return "compas_occ", "ready"
+    def dialog(*args):
+        assert events == ["backend"]
+        events.append("dialog")
+        return "part.step", ""
+    monkeypatch.setattr(viewer, "detect_step_backend", backend)
+    monkeypatch.setattr(viewer.QFileDialog, "getOpenFileName", dialog)
+    viewer.StepViewerMixin.load_step_file(state)
+    assert events == ["backend", "dialog", ("load", "part.step")]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows DLL registration")
 def test_explicit_runtime_paths_remain_registered_and_are_idempotent(tmp_path, monkeypatch):
     native = tmp_path / "cad"

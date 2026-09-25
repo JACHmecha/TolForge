@@ -1041,6 +1041,11 @@ def main():
         if index + 1 >= len(sys.argv):
             raise SystemExit("--self-check-json requires an output path")
         raise SystemExit(run_packaged_smoke_check(sys.argv[index + 1], include_cad="--self-check-cad" in sys.argv))
+    # Bind the optional native CAD reader before Viewer/OpenGL or Windows shell
+    # dialogs initialize other native libraries. Failure keeps scalar tools usable
+    # and is reported by Load STEP; successful imports are cached by Python.
+    configure_native_runtime()
+    detect_step_backend()
     # compas_viewer's Renderer widget internally accesses a Viewer() singleton
     # (via compas_viewer.base.Base.viewer), and Viewer.__init__ unconditionally
     # creates its own QApplication(sys.argv) the first time it's instantiated.

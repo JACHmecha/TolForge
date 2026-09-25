@@ -57,22 +57,22 @@ class StepViewerMixin:
     """
 
     def load_step_file(self):
+        # Resolve the reader before entering the native Windows file chooser.
+        # Optional CAD imports must not depend on native dialog/renderer load order.
+        backend_name, backend_message = detect_step_backend()
+        if backend_name is None:
+            self.step_status_label.setText(backend_message)
+            QMessageBox.warning(self, "STEP backend unavailable", backend_message)
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Load STEP file", "", "STEP files (*.step *.stp)"
         )
         if not path:
             return
 
-        backend_name, backend_message = detect_step_backend()
         self.step_status_label.setText(
             f"Selected: {Path(path).name}\n{backend_message}"
         )
-
-        if backend_name is None:
-            # Keep the live renderer: deleting it here leaves a stale reference
-            # and prevents a later successful load from recovering.
-            QMessageBox.warning(self, "STEP backend unavailable", backend_message)
-            return
 
         self._start_step_load(path)
 
