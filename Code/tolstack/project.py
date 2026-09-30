@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-import json
 from pathlib import Path
-from typing import Any, Iterable, TypeVar
+from typing import Any, TypeVar
 from .workflow import validate_study
+from .json_data import (
+    dumps_strict, loads_strict, require_finite_number, require_text, validate_json_value,
+)
 
 from .domain import (
     AssemblyConstraint, DatumReference, DatumSystem, Distribution,
     FeatureDefinition, PartDefinition, PartOccurrence, ResponseDefinition,
     RigidTransform, ToleranceDefinition, Units, new_id,
     LinearStackDefinition, StackTerm,
-    PositionControlDefinition, PositionPatternMember,
+    PositionControlDefinition, PositionPatternMember, validate_entity,
 )
 
 
@@ -42,9 +44,13 @@ class Project:
     study: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if not self.name.strip():
-            raise ValueError("Project name must not be empty.")
-        if self.schema_version != CURRENT_SCHEMA_VERSION:
+        self._validate_header()
+
+    def _validate_header(self) -> None:
+        require_text(self.name, "Project name")
+        require_text(self.id, "Project id")
+        validate_entity(self.units, Units)
+        if type(self.schema_version) is not int or self.schema_version != CURRENT_SCHEMA_VERSION:
             raise ValueError(
                 f"Unsupported project schema {self.schema_version}; "
                 f"this build supports {CURRENT_SCHEMA_VERSION}."
@@ -52,6 +58,8 @@ class Project:
 
     @staticmethod
     def _add(collection: dict[str, T], entity: T) -> T:
+        if not isinstance(collection, dict):
+            raise ValueError("Project entity collections must be objects keyed by id.")
         entity_id = getattr(entity, "id")
         if entity_id in collection:
             raise ValueError(f"Duplicate entity id '{entity_id}'.")
@@ -59,24 +67,29 @@ class Project:
         return entity
 
     def add_part(self, entity: PartDefinition) -> PartDefinition:
+        validate_entity(entity, PartDefinition)
         return self._add(self.parts, entity)
 
     def add_occurrence(self, entity: PartOccurrence) -> PartOccurrence:
+        validate_entity(entity, PartOccurrence)
         if entity.part_definition_id not in self.parts:
             raise ValueError(f"Unknown part definition '{entity.part_definition_id}'.")
         return self._add(self.occurrences, entity)
 
     def add_feature(self, entity: FeatureDefinition) -> FeatureDefinition:
+        validate_entity(entity, FeatureDefinition)
         if entity.part_definition_id not in self.parts:
             raise ValueError(f"Unknown part definition '{entity.part_definition_id}'.")
         return self._add(self.features, entity)
 
     def add_tolerance(self, entity: ToleranceDefinition) -> ToleranceDefinition:
+        validate_entity(entity, ToleranceDefinition)
         if entity.feature_id is not None and entity.feature_id not in self.features:
             raise ValueError(f"Unknown feature '{entity.feature_id}'.")
         return self._add(self.tolerances, entity)
 
     def add_stack(self, entity: LinearStackDefinition) -> LinearStackDefinition:
+        validate_entity(entity, LinearStackDefinition)
         self._validate_stack(entity)
         return self._add(self.stacks, entity)
 
@@ -92,11 +105,13 @@ class Project:
             )
 
     def add_datum_reference(self, entity: DatumReference) -> DatumReference:
+        validate_entity(entity, DatumReference)
         if entity.feature_id not in self.features:
             raise ValueError(f"Unknown feature '{entity.feature_id}'.")
         return self._add(self.datum_references, entity)
 
     def add_datum_system(self, entity: DatumSystem) -> DatumSystem:
+        validate_entity(entity, DatumSystem)
         missing = set(entity.datum_reference_ids) - self.datum_references.keys()
         if missing:
             raise ValueError(f"Unknown datum references: {sorted(missing)}.")
@@ -105,6 +120,7 @@ class Project:
     def add_position_control(
         self, entity: PositionControlDefinition
     ) -> PositionControlDefinition:
+        validate_entity(entity, PositionControlDefinition)
         self._validate_position_control(entity)
         return self._add(self.position_controls, entity)
 
@@ -130,11 +146,13 @@ class Project:
                     )
 
     def add_constraint(self, entity: AssemblyConstraint) -> AssemblyConstraint:
+        validate_entity(entity, AssemblyConstraint)
         self._validate_occurrence_feature_pair(entity.occurrence_a_id, entity.feature_a_id)
         self._validate_occurrence_feature_pair(entity.occurrence_b_id, entity.feature_b_id)
         return self._add(self.constraints, entity)
 
     def add_response(self, entity: ResponseDefinition) -> ResponseDefinition:
+        validate_entity(entity, ResponseDefinition)
         self._validate_occurrence_feature_pair(entity.occurrence_a_id, entity.feature_a_id)
         self._validate_occurrence_feature_pair(entity.occurrence_b_id, entity.feature_b_id)
         return self._add(self.responses, entity)
@@ -152,8 +170,29 @@ class Project:
             )
 
     def validate(self) -> None:
+        """Validate current entity content, collection identity and references."""
+        self._validate_header()
+        for name, entity_type in (
+            ("parts", PartDefinition), ("occurrences", PartOccurrence),
+            ("features", FeatureDefinition), ("tolerances", ToleranceDefinition),
+            ("stacks", LinearStackDefinition), ("datum_references", DatumReference),
+            ("datum_systems", DatumSystem), ("position_controls", PositionControlDefinition),
+            ("constraints", AssemblyConstraint), ("responses", ResponseDefinition),
+        ):
+            collection = getattr(self, name)
+            if not isinstance(collection, dict):
+                raise ValueError(f"Project {name} must be an object keyed by entity id.")
+            for entity_id, entity in collection.items():
+                require_text(entity_id, f"{name} collection id")
+                validate_entity(entity, entity_type)
+                if entity_id != entity.id:
+                    raise ValueError(f"{name} collection key '{entity_id}' does not match entity id '{entity.id}'.")
+        validate_json_value(self.study, "Study settings")
+        if isinstance(self.study, dict):
+            for key in ("lower_limit", "upper_limit"):
+                if key in self.study:
+                    require_finite_number(self.study[key], f"Study {key}")
         validate_study(self.study)
-        """Validate all references, including objects loaded from JSON."""
 
         for occurrence in self.occurrences.values():
             if occurrence.part_definition_id not in self.parts:
@@ -206,7 +245,7 @@ class Project:
     def from_dict(cls, raw_data: dict[str, Any]) -> "Project":
         data = migrate_project_data(raw_data)
         project = cls(
-            schema_version=int(data["schema_version"]), id=data["id"], name=data["name"],
+            schema_version=data["schema_version"], id=data["id"], name=data["name"],
             units=Units(**data.get("units", {})),
             parts=_load_collection(data.get("parts", []), PartDefinition),
             occurrences=_load_collection(
@@ -247,28 +286,37 @@ class Project:
             ),
             constraints=_load_collection(data.get("constraints", []), AssemblyConstraint),
             responses=_load_collection(data.get("responses", []), ResponseDefinition),
-            study=dict(data.get("study", {})),
+            study=data.get("study", {}),
         )
         project.validate()
         return project
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        # Complete validation and serialization before opening the destination.
+        payload = dumps_strict(self.to_dict())
+        Path(path).write_text(payload, encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path) -> "Project":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        return cls.from_dict(loads_strict(Path(path).read_text(encoding="utf-8")))
 
 
 def _collection_to_list(collection: dict[str, Any]) -> list[dict[str, Any]]:
     return [asdict(entity) for entity in collection.values()]
 
 
-def _load_collection(items: Iterable[dict[str, Any]], cls: type[T], transform=None) -> dict[str, T]:
+def _load_collection(items: list[dict[str, Any]], cls: type[T], transform=None) -> dict[str, T]:
+    if not isinstance(items, list):
+        raise ValueError(f"Project {cls.__name__} collection must be a list.")
     result: dict[str, T] = {}
     for raw_item in items:
-        item = transform(dict(raw_item)) if transform else dict(raw_item)
-        entity = cls(**item)
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"Project {cls.__name__} entries must be objects.")
+        try:
+            item = transform(dict(raw_item)) if transform else dict(raw_item)
+            entity = cls(**item)
+        except (TypeError, AttributeError, KeyError) as exc:
+            raise ValueError(f"Invalid {cls.__name__} data: {exc}") from exc
         if entity.id in result:
             raise ValueError(f"Duplicate entity id '{entity.id}' in project file.")
         result[entity.id] = entity
@@ -278,9 +326,20 @@ def _load_collection(items: Iterable[dict[str, Any]], cls: type[T], transform=No
 def migrate_project_data(raw_data: dict[str, Any]) -> dict[str, Any]:
     """Return current-schema data without mutating caller-owned input."""
 
+    if not isinstance(raw_data, dict):
+        raise ValueError("Project file must be an object.")
+    validate_json_value(raw_data, "Project file")
     data = dict(raw_data)
-    version = int(data.get("schema_version", 0))
+    version = data.get("schema_version", 0)
+    if type(version) is not int:
+        raise ValueError("Project schema version must be an integer.")
     if version == CURRENT_SCHEMA_VERSION:
+        for key in ("id", "name"):
+            require_text(data.get(key), f"Project {key}")
+        if not isinstance(data.get("units", {}), dict):
+            raise ValueError("Project units must be an object.")
+        if set(data.get("units", {})) - {"length", "angle"}:
+            raise ValueError("Project units contain unknown fields.")
         return data
     if version == 0:
         raise ValueError(

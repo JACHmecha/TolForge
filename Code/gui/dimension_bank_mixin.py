@@ -101,7 +101,11 @@ class DimensionBankMixin:
             return
 
         sign = "+" if sign_text == "+" else "-"
-        template = self.bank.get(name)
+        try:
+            template = self.bank.get(name)
+        except (KeyError, ValueError) as exc:
+            QMessageBox.warning(self, "Invalid bank entry", str(exc))
+            return
         self._add_table_row(
             template.name, template.nominal, template.tol_plus,
             template.tol_minus, sign, template.cpk
@@ -132,9 +136,13 @@ class DimensionBankMixin:
                 QMessageBox.warning(self, "Invalid Cpk", f"Cpk '{cpk_text}' is not a valid number.")
                 return
 
-        template = DimensionTemplate(
-            name=name, nominal=nominal, tol_plus=tol_plus, tol_minus=tol_minus, cpk=cpk
-        )
+        try:
+            template = DimensionTemplate(
+                name=name, nominal=nominal, tol_plus=tol_plus, tol_minus=tol_minus, cpk=cpk
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid row", str(exc))
+            return
 
         if name in self.bank.names():
             choice = QMessageBox.question(
@@ -143,9 +151,15 @@ class DimensionBankMixin:
             )
             if choice != QMessageBox.Yes:
                 return
-            self.bank.add(template, overwrite=True)
+            overwrite = True
         else:
-            self.bank.add(template)
+            overwrite = False
+
+        try:
+            self.bank.add(template, overwrite=overwrite)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid bank entry", str(exc))
+            return
 
         self._refresh_bank_combo()
 

@@ -18,6 +18,7 @@ from tolstack.features import FeatureSignature, match_signature, signature_from_
 from tolstack.gdt import PatternFeature, PatternPositionControl
 from tolstack.workflow import validate_workspace_project, require_supported_distribution
 from gui.analysis_mixin import AnalysisMixin
+from gui.gdt_mixin import pattern_cell_value
 
 
 class ProjectMixin:
@@ -463,12 +464,12 @@ class ProjectMixin:
             size_id = name_item.data(self.PATTERN_SIZE_TOLERANCE_ID_ROLE) or new_id()
             x_id = name_item.data(self.PATTERN_X_TOLERANCE_ID_ROLE) or new_id()
             y_id = name_item.data(self.PATTERN_Y_TOLERANCE_ID_ROLE) or new_id()
-            size_tol = float(cell(8) or 0.0)
-            x_tol = float(cell(6) or 0.0)
-            y_tol = float(cell(7) or 0.0)
+            size_tol = pattern_cell_value(self.pattern_table, row, 8, 0.0)
+            x_tol = pattern_cell_value(self.pattern_table, row, 6, 0.0)
+            y_tol = pattern_cell_value(self.pattern_table, row, 7, 0.0)
             common = {"feature_id": feature_id, "distribution": Distribution("uniform")}
             self.project.tolerances[size_id] = ToleranceDefinition(
-                f"{cell(0)} size", "size", float(cell(5)), size_tol, size_tol,
+                f"{cell(0)} size", "size", pattern_cell_value(self.pattern_table, row, 5), size_tol, size_tol,
                 id=size_id, **common,
             )
             self.project.tolerances[x_id] = ToleranceDefinition(
@@ -480,7 +481,8 @@ class ProjectMixin:
                 id=y_id, **common,
             )
             member = PositionPatternMember(
-                cell(0), feature_id, float(cell(1)), float(cell(2)),
+                cell(0), feature_id, pattern_cell_value(self.pattern_table, row, 1),
+                pattern_cell_value(self.pattern_table, row, 2),
                 size_id, x_id, y_id, id=member_id,
             )
             members.append(member)

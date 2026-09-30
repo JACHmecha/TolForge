@@ -27,7 +27,12 @@ or response does not imply the GUI or solver executes every option.
 
 ## Persistence rules
 
-`Project.load()` validates cross-references. Future schema changes belong in
+`Project.validate()` rechecks current entity fields, nested definitions,
+collection keys and cross-references, including mutations after construction.
+Add/load/save boundaries use the same entity rules. Project and dimension-bank
+JSON reject nonfinite values at every depth and duplicate object keys. Saves
+complete validation and serialization before opening the destination.
+Future schema changes belong in
 `migrate_project_data()`. Unversioned dimension-bank and annotation JSON are not
 automatically treated as projects. Length units allow mm/in and angle units
 allow deg/rad, but the application does not implement complete unit conversion.
@@ -51,6 +56,10 @@ It stores center, normal/axis, optional radius, point count, and bounding-box
 scale. Cylinder signatures use the midpoint of the axial extent, the analytic
 axis direction, and radius. Their center is independent of the CAD kernel's
 arbitrary choice of a point on that axis.
+
+Saved signatures validate their finite 3D vectors, positive optional aperture
+radius, nonnegative integer point count and nonnegative size scale before
+matching. Arbitrary finite JSON metadata remains supported.
 
 On STEP loading, the worker recognizes analytic plane/cylinder surfaces and
 passes serializable metadata to scene entity information. Datum extraction

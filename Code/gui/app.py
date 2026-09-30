@@ -490,7 +490,7 @@ class TolstackWindow(
         self.eclipse_result_labels = {}
         for key, caption in [
             ("mean", "Mean eclipse:"), ("std", "Std dev:"),
-            ("mc_range", "Monte Carlo range:"), ("worst_case", "Exact worst case:"),
+            ("mc_range", "Monte Carlo range:"), ("worst_case", "Worst case:"),
             ("probability", "Risk:"),
         ]:
             row = QHBoxLayout()

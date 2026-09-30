@@ -599,13 +599,12 @@ class MeasurementMixin:
         try:
             tol_plus = float(self.measure_tol_plus_input.text() or 0.0)
             tol_minus = float(self.measure_tol_minus_input.text() or 0.0)
-        except ValueError:
-            QMessageBox.warning(self, "Invalid tolerance", "Tol + / Tol - must be numbers.")
+            template = DimensionTemplate(
+                name=name, nominal=nominal, tol_plus=tol_plus, tol_minus=tol_minus, cpk=None
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid measurement or tolerance", str(exc))
             return
-
-        template = DimensionTemplate(
-            name=name, nominal=nominal, tol_plus=tol_plus, tol_minus=tol_minus, cpk=None
-        )
 
         if name in self.bank.names():
             choice = QMessageBox.question(
@@ -652,13 +651,12 @@ class MeasurementMixin:
         try:
             tol_plus = float(self.measure_tol_plus_input.text() or 0.0)
             tol_minus = float(self.measure_tol_minus_input.text() or 0.0)
-        except ValueError:
-            QMessageBox.warning(self, "Invalid tolerance", "Tol + / Tol - must be numbers.")
+            template = DimensionTemplate(
+                name=name, nominal=diameter, tol_plus=tol_plus, tol_minus=tol_minus, cpk=None
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid measurement or tolerance", str(exc))
             return
-
-        template = DimensionTemplate(
-            name=name, nominal=diameter, tol_plus=tol_plus, tol_minus=tol_minus, cpk=None
-        )
         if name in self.bank.names():
             choice = QMessageBox.question(
                 self, "Overwrite entry", f"'{name}' already exists in the bank. Overwrite it?"

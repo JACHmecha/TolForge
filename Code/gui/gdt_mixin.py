@@ -31,6 +31,63 @@ PATTERN_COLUMNS = [
 ]
 
 
+PATTERN_RAW_VALUE_ROLE = Qt.UserRole + 216
+
+
+class PatternNumericItem(QTableWidgetItem):
+    """Keep engineering values separate from the table's display precision.
+
+    Editors receive round-trip text, so accepting an unchanged cell cannot
+    replace a small CAD offset with the rounded value shown in the sidebar.
+    Text edits replace (or clear) the raw value, including programmatic edits.
+    """
+
+    def __init__(self, value, decimals=4):
+        super().__init__()
+        self._display_decimals = decimals
+        super().setData(PATTERN_RAW_VALUE_ROLE, float(value))
+        self.set_display_precision(decimals)
+
+    def data(self, role):
+        if role == Qt.EditRole:
+            value = super().data(PATTERN_RAW_VALUE_ROLE)
+            if value is not None:
+                return str(value)
+        return super().data(role)
+
+    def setData(self, role, value):
+        if role in (Qt.DisplayRole, Qt.EditRole):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                number = None
+            super().setData(PATTERN_RAW_VALUE_ROLE, number)
+            super().setData(Qt.DisplayRole, value)
+            return
+        super().setData(role, value)
+
+    def set_display_precision(self, decimals):
+        """Reformat the visible number without editing its engineering value."""
+        self._display_decimals = decimals
+        value = super().data(PATTERN_RAW_VALUE_ROLE)
+        if value is not None:
+            text = str(value) if decimals is None else f"{value:.{decimals}f}"
+            super().setData(Qt.DisplayRole, text)
+
+
+def pattern_cell_value(table, row, column, default=None):
+    """Read raw numbers; plain/legacy table items still use their edit text."""
+    item = table.item(row, column)
+    if item is not None:
+        value = item.data(PATTERN_RAW_VALUE_ROLE)
+        if value is not None:
+            return float(value)
+        text = item.text().strip()
+    else:
+        text = ""
+    return float(default if not text and default is not None else text)
+
+
 class GdtMixin(DatumInspectionMixin):
     """Expects the host class (TolstackWindow) to provide, from its own
     __init__: self._step_entity_info, self.step_status_label, plus the
@@ -254,12 +311,24 @@ class GdtMixin(DatumInspectionMixin):
         name = name.strip()
 
         x_local, y_local = self._current_drf.to_local_xy(circle["center"])
-        basic_x, ok = QInputDialog.getDouble(self, "Basic X", "Basic (theoretical exact) X, per the drawing:", x_local, -1e6, 1e6, 4)
-        if not ok:
-            return
-        basic_y, ok = QInputDialog.getDouble(self, "Basic Y", "Basic (theoretical exact) Y, per the drawing:", y_local, -1e6, 1e6, 4)
-        if not ok:
-            return
+        basics = []
+        for axis, coordinate in (("X", x_local), ("Y", y_local)):
+            text, ok = QInputDialog.getText(
+                self, f"Basic {axis}",
+                f"Basic (theoretical exact) {axis}, per the drawing:",
+                text=str(coordinate),
+            )
+            if not ok:
+                return
+            try:
+                value = float(text)
+                if not np.isfinite(value):
+                    raise ValueError
+            except ValueError:
+                QMessageBox.warning(self, "Invalid basic coordinate", f"Basic {axis} must be a finite number.")
+                return
+            basics.append(value)
+        basic_x, basic_y = basics
 
         try:
             feature_id = self._project_register_feature(info, label=name)
@@ -283,14 +352,10 @@ class GdtMixin(DatumInspectionMixin):
         if feature_id and hasattr(self, "PATTERN_FEATURE_ID_ROLE"):
             name_item.setData(self.PATTERN_FEATURE_ID_ROLE, feature_id)
         table.setItem(row, 0, name_item)
-        table.setItem(row, 1, QTableWidgetItem(f"{basic_x:.4f}"))
-        table.setItem(row, 2, QTableWidgetItem(f"{basic_y:.4f}"))
-        table.setItem(row, 3, QTableWidgetItem(f"{actual_x:.4f}"))
-        table.setItem(row, 4, QTableWidgetItem(f"{actual_y:.4f}"))
-        table.setItem(row, 5, QTableWidgetItem(f"{diameter:.4f}"))
-        table.setItem(row, 6, QTableWidgetItem("0.0"))
-        table.setItem(row, 7, QTableWidgetItem("0.0"))
-        table.setItem(row, 8, QTableWidgetItem("0.0"))
+        for column, value in enumerate((basic_x, basic_y, actual_x, actual_y, diameter), 1):
+            table.setItem(row, column, PatternNumericItem(value))
+        for column in (6, 7, 8):
+            table.setItem(row, column, PatternNumericItem(0.0, decimals=None))
         table.setItem(row, 9, QTableWidgetItem("-"))
         for column in (3, 4):
             item = table.item(row, column)
@@ -316,11 +381,15 @@ class GdtMixin(DatumInspectionMixin):
 
             features.append(PatternFeature(
                 name=cell(0),
-                basic_x=float(cell(1)), basic_y=float(cell(2)),
-                actual_x=float(cell(3)), actual_y=float(cell(4)),
-                size_nominal=float(cell(5)), size_tol_plus=float(cell(8) or 0.0), size_tol_minus=float(cell(8) or 0.0),
-                position_tol_plus_x=float(cell(6) or 0.0), position_tol_minus_x=float(cell(6) or 0.0),
-                position_tol_plus_y=float(cell(7) or 0.0), position_tol_minus_y=float(cell(7) or 0.0),
+                basic_x=pattern_cell_value(table, row, 1), basic_y=pattern_cell_value(table, row, 2),
+                actual_x=pattern_cell_value(table, row, 3), actual_y=pattern_cell_value(table, row, 4),
+                size_nominal=pattern_cell_value(table, row, 5),
+                size_tol_plus=pattern_cell_value(table, row, 8, 0.0),
+                size_tol_minus=pattern_cell_value(table, row, 8, 0.0),
+                position_tol_plus_x=pattern_cell_value(table, row, 6, 0.0),
+                position_tol_minus_x=pattern_cell_value(table, row, 6, 0.0),
+                position_tol_plus_y=pattern_cell_value(table, row, 7, 0.0),
+                position_tol_minus_y=pattern_cell_value(table, row, 7, 0.0),
             ))
         return features
 

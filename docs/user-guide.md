@@ -165,9 +165,21 @@ Set the base diametral position tolerance, feature kind, material modifier,
 size limits, and sampling inputs; use nominal or Monte Carlo evaluation.
 Size and position must both conform. See [calculation semantics](gdt-semantics.md).
 
+Pattern cells can display rounded numbers while calculations and project files
+retain their full precision. Opening a cell editor shows its full value;
+accepting an unchanged value preserves it.
+
 Eclipse estimates light blockage by two circular apertures using their diameters
-and relative offset. It can reuse measured diameters/offsets and run corner and
-Monte Carlo analyses. It is a circular-aperture model, not optical ray tracing.
+and relative offset. It can reuse measured diameters/offsets and run full-zone
+worst-case and Monte Carlo analyses. The worst-case range includes interior
+diameter extrema and is evaluated numerically. It is a circular-aperture model,
+not optical ray tracing.
+
+Use finite numbers, nonnegative tolerance magnitudes, positive diameter ranges,
+and a positive Cpk when supplied. The threshold is a percentage from 0 to 100.
+An invalid run clears the previous results and reports the input error. Normal
+sampling remains unbounded; a generated nonpositive diameter rejects the run
+and asks you to review the diameter/Cpk assumptions.
 
 ## Saving and reopening
 
@@ -181,6 +193,11 @@ measurement slots, histogram samples, and Eclipse settings are not a complete
 saved session. Build a complete, valid datum system before saving it; the bridge
 only synchronizes a full A/B/C set. Signature matching is heuristic: a changed
 or ambiguous feature may need manual reassignment.
+
+Project and bank saves revalidate current data, including changes made after
+creation. Nonfinite numbers and malformed identities or geometric signatures
+are rejected. Validation and JSON serialization finish before the existing
+destination file is opened, so invalid data cannot replace a valid saved file.
 
 ## Known limitations
 

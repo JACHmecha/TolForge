@@ -11,6 +11,7 @@ just measured from the STEP geometry.
 from PySide6.QtWidgets import QMessageBox
 
 from tolstack.eclipse import ToleranceInput, EclipseInputs, run_monte_carlo, worst_case
+from tolstack.models import finite_number
 from gui.theme import COLORS, style_axes
 
 
@@ -74,7 +75,7 @@ class EclipseMixin:
             )
             return
         diameter = info["circle"]["radius"] * 2
-        getattr(self, f"eclipse_{prefix}_nominal_input").setText(f"{diameter:.4f}")
+        getattr(self, f"eclipse_{prefix}_nominal_input").setText(repr(float(diameter)))
 
     def use_measured_offset(self):
         """Pulls the circle-center distance from the Measure tab (A vs B)
@@ -89,7 +90,7 @@ class EclipseMixin:
                 "Measure two circular features (A and B) in the Measure tab first."
             )
             return
-        self.eclipse_offset_x_nominal_input.setText(f"{last['circle_center_distance']:.4f}")
+        self.eclipse_offset_x_nominal_input.setText(repr(float(last['circle_center_distance'])))
         self.eclipse_offset_y_nominal_input.setText("0.0")
 
     # ------------------------------------------------------------------
@@ -97,20 +98,23 @@ class EclipseMixin:
     # ------------------------------------------------------------------
 
     def run_eclipse_analysis(self):
+        # A failed new run must not leave a previous probability or histogram
+        # looking like the result for the inputs currently on screen.
+        self._eclipse_clear_results()
         try:
             inputs = self._eclipse_read_all_inputs()
-        except ValueError as exc:
-            QMessageBox.warning(self, "Invalid input", str(exc))
-            return
-
-        iterations = self.eclipse_iterations_input.value()
-        try:
+            threshold_pct = finite_number(self.eclipse_threshold_input.text(), "Eclipse threshold (%)")
+            if not 0 <= threshold_pct <= 100:
+                raise ValueError("Eclipse threshold must be from 0 to 100%.")
+            iterations = self.eclipse_iterations_input.value()
             mc_result = run_monte_carlo(inputs, iterations=iterations)
+            exact_min, exact_max = worst_case(inputs)
+            probability = mc_result.probability_above(threshold_pct / 100.0)
         except ValueError as exc:
-            QMessageBox.warning(self, "Invalid Cpk", str(exc))
+            for label in self.eclipse_result_labels.values():
+                label.setText("Invalid input")
+            QMessageBox.warning(self, "Invalid Eclipse analysis", str(exc))
             return
-
-        exact_min, exact_max = worst_case(inputs)
 
         labels = self.eclipse_result_labels
         labels["mean"].setText(f"{mc_result.mean * 100:.2f} %")
@@ -119,19 +123,21 @@ class EclipseMixin:
             f"{mc_result.minimum * 100:.2f} % - {mc_result.maximum * 100:.2f} % (Monte Carlo, {iterations} samples)"
         )
         labels["worst_case"].setText(
-            f"{exact_min * 100:.2f} % - {exact_max * 100:.2f} % (exact, over full tolerance zone)"
+            f"{exact_min * 100:.2f} % - {exact_max * 100:.2f} % (numerical, over full tolerance zone)"
         )
 
-        try:
-            threshold_pct = float(self.eclipse_threshold_input.text() or 0.0)
-        except ValueError:
-            threshold_pct = 0.0
-        probability = mc_result.probability_above(threshold_pct / 100.0)
         labels["probability"].setText(
             f"{probability * 100:.2f} % chance of losing more than {threshold_pct:.1f} % of the aperture"
         )
 
         self._eclipse_plot_histogram(mc_result.samples)
+
+    def _eclipse_clear_results(self):
+        for label in self.eclipse_result_labels.values():
+            label.setText("—")
+        self.eclipse_figure.clear()
+        self.eclipse_canvas.setVisible(False)
+        self.eclipse_canvas.draw_idle()
 
     def _eclipse_plot_histogram(self, samples):
         self.eclipse_figure.clear()

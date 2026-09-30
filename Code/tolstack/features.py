@@ -26,10 +26,13 @@ of silently attaching an annotation to the wrong feature.
 from dataclasses import dataclass
 import numpy as np
 
+from .feature_schema import SIGNATURE_KINDS, validate_feature_signature_data
+from .json_data import validate_json_value
+
 # Kinds a signature can represent - deliberately coarse; enough to avoid
 # comparing a circle's signature against a plane's, not a full geometry
 # classification.
-_KINDS = ("circle", "cylinder", "plane", "point", "generic")
+_KINDS = SIGNATURE_KINDS
 
 
 @dataclass
@@ -42,18 +45,29 @@ class FeatureSignature:
     bbox_diagonal: float       # size scale of the point cloud this was fit from
 
     def __post_init__(self):
-        if self.kind not in _KINDS:
-            raise ValueError(f"Unknown signature kind '{self.kind}', expected one of {_KINDS}.")
+        self.validate()
         self.center = np.asarray(self.center, dtype=float)
         if self.normal is not None:
-            norm = np.linalg.norm(self.normal)
-            self.normal = np.asarray(self.normal, dtype=float) / norm if norm > 0 else None
+            normal = np.asarray(self.normal, dtype=float)
+            scale = float(np.max(np.abs(normal)))
+            # Normalize without overflowing for large, finite components.
+            scaled = normal / scale if scale > 0 else normal
+            norm = float(np.linalg.norm(scaled))
+            self.normal = scaled / norm if norm > 0 else None
+
+    def validate(self) -> None:
+        validate_feature_signature_data({
+            "kind": self.kind, "center": self.center, "normal": self.normal,
+            "radius": self.radius, "point_count": self.point_count,
+            "bbox_diagonal": self.bbox_diagonal,
+        })
 
     def to_dict(self) -> dict:
+        self.validate()
         return {
             "kind": self.kind,
-            "center": self.center.tolist(),
-            "normal": self.normal.tolist() if self.normal is not None else None,
+            "center": np.asarray(self.center, dtype=float).tolist(),
+            "normal": np.asarray(self.normal, dtype=float).tolist() if self.normal is not None else None,
             "radius": self.radius,
             "point_count": self.point_count,
             "bbox_diagonal": self.bbox_diagonal,
@@ -61,6 +75,8 @@ class FeatureSignature:
 
     @classmethod
     def from_dict(cls, data: dict) -> "FeatureSignature":
+        validate_json_value(data, "Feature signature")
+        validate_feature_signature_data(data)
         return cls(
             kind=data["kind"],
             center=np.array(data["center"], dtype=float),
