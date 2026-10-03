@@ -17,5 +17,8 @@ build/
 .idea/
 .DS_Store
 
+# Machine-local native DLL configuration
+.tolforge/
+
 # Jupyter
 .ipynb_checkpoints/

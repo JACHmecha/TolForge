@@ -9,6 +9,11 @@ of the application and are easiest to reason about on their own.
 import importlib
 import importlib.util
 
+from .runtime import (
+    configure_native_runtime, native_runtime_diagnostics,
+    write_native_runtime_diagnostics,
+)
+
 
 VIEWPORT_THEME = {
     "background": "#1C2228",
@@ -215,6 +220,9 @@ def detect_step_backend() -> tuple[str | None, str]:
     implemented, so we report them as detected-but-unsupported rather than
     silently pretending the preview will work.
     """
+    # Re-read local configuration here as well as at startup. Users can repair
+    # their DLL configuration while the GUI is open and retry Load STEP.
+    configure_native_runtime()
     if importlib.util.find_spec("compas_occ"):
         try:
             # Finding a Python package does not prove its native DLLs load.
@@ -222,10 +230,22 @@ def detect_step_backend() -> tuple[str | None, str]:
             importlib.import_module("compas_occ.brep")
             importlib.import_module("OCC.Core.STEPControl")
         except Exception as exc:
+            details = native_runtime_diagnostics()
+            report_path = write_native_runtime_diagnostics(exc)
+            runtime_message = (
+                f"\n\nPython: {details['python_executable']}"
+                f"\nDLL configuration: {details['runtime_config_source']}"
+                f"\nRegistered DLL directories: {len(details['registered_dll_directories'])}"
+            )
+            if details["runtime_config_source"] == "environment":
+                runtime_message += "\nTOLFORGE_DLL_DIRS overrides your local runtime.json."
+            if report_path is not None:
+                runtime_message += f"\nDiagnostic report: {report_path}"
             return None, (
                 f"compas_occ is installed, but its STEP reader could not load: {exc}. "
                 "Use an activated conda-forge compas_occ environment, or configure "
-                "TOLFORGE_DLL_DIRS or your local TolForge/runtime.json with native DLL directories before launch."
+                "TOLFORGE_DLL_DIRS or your local TolForge/runtime.json with native DLL directories, then retry Load STEP."
+                + runtime_message
             )
         return "compas_occ", "Loaded compas_occ (OpenCascade) STEP reader."
 

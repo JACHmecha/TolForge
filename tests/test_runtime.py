@@ -10,6 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Code"))
 
 from gui import runtime
 
+_SOURCE_RUNTIME_CONFIG_PATH = runtime.source_native_runtime_config_path
+
+
+@pytest.fixture(autouse=True)
+def isolate_checkout_runtime_configuration(monkeypatch):
+    """Optional machine-local checkout files must not affect test defaults."""
+    monkeypatch.setattr(runtime, "source_native_runtime_config_path", lambda: None)
+
 
 def test_local_runtime_config_is_used_without_environment_override(tmp_path, monkeypatch):
     config = tmp_path / "runtime.json"
@@ -102,6 +110,7 @@ def test_backend_detection_checks_native_step_imports(monkeypatch):
     from gui import step_renderer
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(step_renderer, "write_native_runtime_diagnostics", lambda error: None)
 
     def broken_import(name):
         raise ImportError("missing OCCT DLL")
@@ -120,3 +129,192 @@ def test_packaging_smoke_checks_real_imports_calculation_and_bundled_icons(tmp_p
     assert result["status"] == "ok"
     assert len(result["checks"]) == 3
     assert result["cad_qualification"] == "not exercised"
+
+
+def test_native_diagnostics_identifies_config_source_registered_paths_and_modules(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({"dll_directories": [str(tmp_path / "configured")]}), encoding="utf-8")
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: config)
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    registered = str(tmp_path / "registered")
+    monkeypatch.setattr(runtime, "_DLL_HANDLES", {registered: object()})
+    modules = {"TKernel.dll": str(tmp_path / "loaded" / "TKernel.dll")}
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: modules)
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-recorded")
+
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "file"
+    assert report["runtime_config_path"] == str(config)
+    assert report["active_runtime_config_path"] == str(config)
+    assert report["runtime_config_exists"] is True
+    assert report["configured_dll_directories"] == [str(tmp_path / "configured")]
+    assert report["registered_dll_directories"] == [registered]
+    assert report["loaded_native_modules"] == modules
+    assert report["python_executable"] == sys.executable
+    assert report["python_version"] == sys.version.split()[0]
+    assert report["runtime_module_path"] == str(Path(runtime.__file__).resolve())
+    assert report["conda_prefix"] is None
+    assert "must-not-be-recorded" not in json.dumps(report)
+    assert "PATH" not in report
+
+
+def test_native_diagnostics_honors_environment_override_and_conda_without_registering(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({"dll_directories": ["ignored-file-setting"]}), encoding="utf-8")
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: config)
+    explicit = tmp_path / "override"
+    monkeypatch.setenv("TOLFORGE_DLL_DIRS", f'"{explicit}"')
+    conda_prefix = tmp_path / "conda"
+    conda_bin = conda_prefix / "Library" / "bin"
+    conda_bin.mkdir(parents=True)
+    monkeypatch.setenv("CONDA_PREFIX", str(conda_prefix))
+    monkeypatch.setattr(runtime, "_DLL_HANDLES", {})
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: {})
+
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "environment"
+    assert report["active_runtime_config_path"] is None
+    assert report["configured_dll_directories"] == [str(explicit), str(conda_bin)]
+    assert report["registered_dll_directories"] == []
+    assert report["conda_prefix"] == str(conda_prefix)
+    assert runtime._DLL_HANDLES == {}
+
+
+def test_native_diagnostics_reports_no_optional_config_and_tolerates_malformed_file(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.json"
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: config)
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(runtime, "_DLL_HANDLES", {})
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: {})
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "none"
+    assert report["active_runtime_config_path"] is None
+    assert report["runtime_config_exists"] is False
+    assert report["configured_dll_directories"] == []
+    config.write_text('{"dll_directories": "wrong type"}', encoding="utf-8")
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "file"
+    assert report["configured_dll_directories"] == []
+
+
+def test_native_diagnostic_writer_commits_complete_report_to_per_user_location(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(runtime, "_DLL_HANDLES", {})
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: {})
+    destination = tmp_path / "TolForge" / "native-runtime-diagnostics.json"
+    error = ImportError("dependent native DLL not found")
+
+    assert runtime.write_native_runtime_diagnostics(error) == destination
+    report = json.loads(destination.read_text(encoding="utf-8"))
+    assert report["error"] == "ImportError: dependent native DLL not found"
+    assert report["runtime_config_path"] == str(tmp_path / "TolForge" / "runtime.json")
+    assert report["python_executable"] == sys.executable
+    assert list(destination.parent.glob(".native-runtime-diagnostics-*.tmp")) == []
+
+
+def test_native_diagnostic_replace_failure_preserves_prior_report_and_original_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: {})
+    destination = tmp_path / "TolForge" / "native-runtime-diagnostics.json"
+    destination.parent.mkdir()
+    destination.write_text('{"prior": true}', encoding="utf-8")
+    previous = destination.read_bytes()
+    monkeypatch.setattr(runtime.os, "replace", lambda *args: (_ for _ in ()).throw(PermissionError("report locked")))
+    original = ImportError("original missing OCCT dependency")
+
+    try:
+        raise original
+    except ImportError as caught:
+        assert runtime.write_native_runtime_diagnostics(caught) is None
+        assert caught is original
+        assert str(caught) == "original missing OCCT dependency"
+    assert destination.read_bytes() == previous
+    assert list(destination.parent.glob(".native-runtime-diagnostics-*.tmp")) == []
+
+
+def test_native_diagnostic_unwritable_directory_returns_none(tmp_path, monkeypatch):
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.write_text("A file cannot be a report directory.", encoding="utf-8")
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: blocked_parent / "runtime.json")
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: {})
+    assert runtime.write_native_runtime_diagnostics(ImportError("original")) is None
+    assert blocked_parent.read_text(encoding="utf-8") == "A file cannot be a report directory."
+
+
+def test_source_runtime_config_path_follows_own_checkout_and_is_excluded_when_frozen(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, "source_native_runtime_config_path", _SOURCE_RUNTIME_CONFIG_PATH)
+    monkeypatch.setattr(runtime, "__file__", str(tmp_path / "Code" / "gui" / "runtime.py"))
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert runtime.source_native_runtime_config_path() == tmp_path / ".tolforge" / "runtime.json"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert runtime.source_native_runtime_config_path() is None
+
+
+def test_source_runtime_file_is_used_only_without_environment_or_per_user_config(tmp_path, monkeypatch):
+    user_config = tmp_path / "user" / "runtime.json"
+    source_config = tmp_path / ".tolforge" / "runtime.json"
+    source_config.parent.mkdir()
+    source_config.write_text(json.dumps({"dll_directories": ["source-native"]}), encoding="utf-8")
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: user_config)
+    monkeypatch.setattr(runtime, "source_native_runtime_config_path", lambda: source_config)
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(runtime, "_DLL_HANDLES", {})
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: {})
+
+    assert runtime._configured_dll_directories() == ["source-native"]
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "source_file"
+    assert report["runtime_config_path"] == str(user_config)
+    assert report["runtime_config_exists"] is False
+    assert report["active_runtime_config_path"] == str(source_config)
+    assert report["configured_dll_directories"] == ["source-native"]
+    assert not user_config.exists()
+
+    user_config.parent.mkdir()
+    user_config.write_text(json.dumps({"dll_directories": ["user-native"]}), encoding="utf-8")
+    assert runtime._configured_dll_directories() == ["user-native"]
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "file"
+    assert report["active_runtime_config_path"] == str(user_config)
+
+    monkeypatch.setenv("TOLFORGE_DLL_DIRS", "environment-native")
+    assert runtime._configured_dll_directories() == ["environment-native"]
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "environment"
+    assert report["active_runtime_config_path"] is None
+
+
+def test_malformed_per_user_file_keeps_precedence_over_source_fallback(tmp_path, monkeypatch):
+    user_config = tmp_path / "runtime.json"
+    source_config = tmp_path / "source-runtime.json"
+    user_config.write_text('{"dll_directories": "invalid"}', encoding="utf-8")
+    source_config.write_text(json.dumps({"dll_directories": ["source-native"]}), encoding="utf-8")
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: user_config)
+    monkeypatch.setattr(runtime, "source_native_runtime_config_path", lambda: source_config)
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    with pytest.warns(RuntimeWarning, match="Cannot read"):
+        assert runtime._configured_dll_directories() == []
+    assert runtime.native_runtime_diagnostics()["runtime_config_source"] == "file"
+
+
+def test_frozen_runtime_never_uses_source_file_even_if_checkout_file_exists(tmp_path, monkeypatch):
+    source_config = tmp_path / ".tolforge" / "runtime.json"
+    source_config.parent.mkdir()
+    source_config.write_text(json.dumps({"dll_directories": ["source-native"]}), encoding="utf-8")
+    monkeypatch.setattr(runtime, "source_native_runtime_config_path", _SOURCE_RUNTIME_CONFIG_PATH)
+    monkeypatch.setattr(runtime, "__file__", str(tmp_path / "Code" / "gui" / "runtime.py"))
+    monkeypatch.setattr(runtime, "native_runtime_config_path", lambda: tmp_path / "user-runtime.json")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.delenv("TOLFORGE_DLL_DIRS", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(runtime, "_DLL_HANDLES", {})
+    monkeypatch.setattr(runtime, "_loaded_native_module_paths", lambda: {})
+    assert runtime._configured_dll_directories() == []
+    report = runtime.native_runtime_diagnostics()
+    assert report["runtime_config_source"] == "none"
+    assert report["active_runtime_config_path"] is None

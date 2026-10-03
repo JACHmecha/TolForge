@@ -27,9 +27,51 @@ The configured local source environment uses Python 3.10 at
 `D:\GIT\REPOS\TolForge\Code\gui\app.py`. This source execution works in
 that environment but differs from the package's Python 3.11+ metadata.
 Reconcile and test the environment before changing interpreter or packaging.
-`app.py` also conditionally registers machine-specific OCCT, FreeType, and
-Tcl/Tk DLL directories under `D:\GIT\REPOS`; other installations must provide
-their own compatible DLL search configuration.
+`app.py` calls `gui.runtime.configure_native_runtime()` before importing CAD
+libraries. Configure compatible native DLL directories locally; workstation
+paths are not embedded in the application.
+
+### Native CAD configuration
+
+On Windows, choose one of these configuration sources, in priority order:
+
+1. `TOLFORGE_DLL_DIRS`, a semicolon-separated list of absolute DLL directories.
+2. `%LOCALAPPDATA%\TolForge\runtime.json`.
+3. `.tolforge/runtime.json` in the source checkout, when the per-user file is
+   absent. This private directory is ignored by Git. Frozen executables do not
+   use the checkout fallback.
+
+Either JSON file uses this structure; replace the example paths with the
+compatible native libraries installed on your machine:
+
+```json
+{
+  "dll_directories": [
+    "C:/CAD/OCCT/bin",
+    "C:/CAD/FreeType/bin",
+    "C:/CAD/TclTk/bin"
+  ]
+}
+```
+
+An active conda environment also contributes its `Library/bin` directory.
+An existing malformed per-user file produces a warning and retains its
+priority; repair that file rather than expecting the checkout fallback.
+
+Load STEP refreshes the configuration before checking the reader. After adding
+missing DLL directories, retry Load STEP. Existing registered DLL directories
+and loaded libraries stay active for the process lifetime; restart after
+removing paths or replacing incompatible native binaries.
+
+On a reader import failure, the dialog identifies the interpreter, configuration
+source and registered directory count. The app also attempts to save
+`%LOCALAPPDATA%\TolForge\native-runtime-diagnostics.json`, containing selected
+runtime paths and loaded native modules. A diagnostic write failure preserves
+the original reader error.
+
+Packaged tools can redirect AppData writes. When configuring a source checkout
+from such a tool, verify which file the external launcher can actually see;
+the private checkout file avoids this ambiguity.
 
 ## Architecture
 
