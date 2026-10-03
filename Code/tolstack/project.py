@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any, TypeVar
 from .workflow import validate_study
 from .json_data import (
-    dumps_strict, loads_strict, require_finite_number, require_text, validate_json_value,
+    loads_strict, require_finite_number, require_text, validate_json_value,
 )
+from .persistence import backup_path, save_json
 
 from .domain import (
     AssemblyConstraint, DatumReference, DatumSystem, Distribution,
@@ -293,12 +294,16 @@ class Project:
 
     def save(self, path: str | Path) -> None:
         # Complete validation and serialization before opening the destination.
-        payload = dumps_strict(self.to_dict())
-        Path(path).write_text(payload, encoding="utf-8")
+        save_json(path, self.to_dict(), previous_validator=type(self).from_dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "Project":
         return cls.from_dict(loads_strict(Path(path).read_text(encoding="utf-8")))
+
+    @classmethod
+    def load_previous(cls, path: str | Path) -> "Project":
+        """Load and validate the previous saved version without changing disk."""
+        return cls.load(backup_path(path))
 
 
 def _collection_to_list(collection: dict[str, Any]) -> list[dict[str, Any]]:

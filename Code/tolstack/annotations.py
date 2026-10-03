@@ -21,10 +21,12 @@ successful re-match.
 """
 
 from dataclasses import dataclass, field
-import json
 import uuid
+from pathlib import Path
 
 from .features import FeatureSignature
+from .json_data import loads_strict
+from .persistence import backup_path, save_json
 
 _MODIFIERS = ("RFS", "MMC", "LMC")
 _FEATURE_KINDS = ("hole", "pin")
@@ -251,21 +253,28 @@ class AnnotationSet:
 
     @classmethod
     def from_dict(cls, data: dict) -> "AnnotationSet":
-        return cls(
-            source_file=data.get("source_file"),
-            feature_refs={
-                ref_id: FeatureReference.from_dict(ref_data)
-                for ref_id, ref_data in data.get("feature_refs", {}).items()
-            },
-            position_controls=[PositionControlDefinition.from_dict(pc) for pc in data.get("position_controls", [])],
-            dimension_links=[DimensionLinkDefinition.from_dict(dl) for dl in data.get("dimension_links", [])],
-        )
+        if not isinstance(data, dict):
+            raise ValueError("Annotation file must be an object.")
+        try:
+            return cls(
+                source_file=data.get("source_file"),
+                feature_refs={
+                    ref_id: FeatureReference.from_dict(ref_data)
+                    for ref_id, ref_data in data.get("feature_refs", {}).items()
+                },
+                position_controls=[PositionControlDefinition.from_dict(pc) for pc in data.get("position_controls", [])],
+                dimension_links=[DimensionLinkDefinition.from_dict(dl) for dl in data.get("dimension_links", [])],
+            )
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise ValueError(f"Invalid annotation file structure: {exc}") from exc
 
     def save(self, path: str):
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(self.to_dict(), handle, indent=2)
+        save_json(path, self.to_dict(), previous_validator=type(self).from_dict)
 
     @classmethod
     def load(cls, path: str) -> "AnnotationSet":
-        with open(path, "r", encoding="utf-8") as handle:
-            return cls.from_dict(json.load(handle))
+        return cls.from_dict(loads_strict(Path(path).read_text(encoding="utf-8")))
+
+    @classmethod
+    def load_previous(cls, path: str) -> "AnnotationSet":
+        return cls.load(backup_path(path))

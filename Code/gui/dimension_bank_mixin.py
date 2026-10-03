@@ -171,7 +171,10 @@ class DimensionBankMixin:
         self._refresh_bank_combo()
 
     def load_bank_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load bank", "", "JSON files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load bank or previous version", "",
+            "Bank files and previous versions (*.json *.json.bak)",
+        )
         if not path:
             return
         try:

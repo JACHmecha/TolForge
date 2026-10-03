@@ -8,7 +8,8 @@ by Stack.monte_carlo; they are not 3D GD&T sensitivities or a six-sigma claim.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
+import json
 from math import pi, sqrt
 
 import numpy as np
@@ -18,6 +19,7 @@ from .models import (
     finite_number, parse_optional_cpk, validated_dimension,
 )
 from .stack import Stack
+from .reporting import ReportEvidence, build_report_evidence, canonical_json, revise_report_evidence
 
 
 def build_stack(rows: Iterable[Mapping]) -> Stack:
@@ -184,9 +186,49 @@ class AnalysisReport:
     fit_at_zero: FitAssessment
     contributions: tuple[VarianceContribution, ...]
     assumptions: tuple[str, ...]
+    evidence: ReportEvidence | None = None
+    _export_json: str = field(init=False, repr=False, compare=False)
+    _evaluated_samples: bytes | None = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        if self.evidence is None:
+            object.__setattr__(self, "evidence", build_report_evidence(
+                "independent_linear_scalar_stack", {"dimensions": [asdict(item) for item in self.dimensions]},
+                settings=asdict(self.settings), scope=self.assumptions, solver="independent_scalar_stack",
+            ))
+        object.__setattr__(self, "_export_json", canonical_json(self._capture_export_payload()))
+        # Legacy result objects remain available to callers, but reassessment
+        # uses the original sample values even if those objects are edited.
+        object.__setattr__(self, "_evaluated_samples", (
+            np.asarray(self.result.samples, dtype=np.float64).tobytes()
+            if isinstance(self.result, MonteCarloResult) else None
+        ))
 
     def to_dict(self) -> dict:
-        """Review/export payload: input snapshot and summary, without raw samples."""
+        """Detached evaluation snapshot, including immutable result summaries."""
+        return json.loads(self._export_json)
+
+    def _result_for_reassessment(self):
+        """Retain compatible result identity only while its values are intact."""
+        summary = self.to_dict()["result"]
+        if self._evaluated_samples is None:
+            original = StackResult(**summary)
+            if isinstance(self.result, StackResult) and asdict(self.result) == summary:
+                return self.result
+            return original
+        samples = np.frombuffer(self._evaluated_samples, dtype=np.float64)
+        original = MonteCarloResult(samples=samples, **{
+            key: summary[key] for key in ("mean", "std_dev", "minimum", "maximum")
+        })
+        if (isinstance(self.result, MonteCarloResult)
+                and all(getattr(self.result, key) == getattr(original, key)
+                        for key in ("mean", "std_dev", "minimum", "maximum"))
+                and np.array_equal(self.result.samples, samples)):
+            return self.result
+        return original
+
+    def _capture_export_payload(self) -> dict:
+        """Capture once at construction; reassessment constructs a new report."""
         if isinstance(self.result, MonteCarloResult):
             result = {
                 "sample_count": len(self.result.samples), "mean": float(self.result.mean),
@@ -195,7 +237,7 @@ class AnalysisReport:
             }
         else:
             result = asdict(self.result)
-        return {
+        payload = {
             "analysis_kind": "independent_linear_scalar_stack", "settings": asdict(self.settings),
             "dimensions": [asdict(item) for item in self.dimensions], "result": result,
             "acceptance": asdict(self.acceptance), "fit_at_zero": asdict(self.fit_at_zero),
@@ -204,30 +246,42 @@ class AnalysisReport:
             "expected_variance": sum(item.response_variance for item in self.contributions),
             "assumptions": list(self.assumptions),
         }
+        if self.evidence is not None:
+            evidence = self.evidence.to_dict()
+            # Export the captured inputs, even if a consumer mutates one of the
+            # legacy mutable Dimension objects held by this frozen dataclass.
+            payload["dimensions"] = evidence["input_snapshot"]["inputs"]["dimensions"]
+            payload["settings"] = evidence["input_snapshot"]["settings"]
+            payload["evidence"] = evidence
+        return payload
 
 
-def update_report_limits(report: AnalysisReport, lower, upper) -> AnalysisReport:
+def update_report_limits(report: AnalysisReport, lower, upper, *, assumptions=None) -> AnalysisReport:
     """Reassess an existing result without resampling when limits are edited."""
-    settings = replace(report.settings, lower_limit=lower, upper_limit=upper)
-    return replace(report, settings=settings, acceptance=assess_acceptance(report.result, lower, upper))
+    snapshot = report.to_dict()
+    original_settings = AnalysisSettings(**snapshot["settings"])
+    settings = replace(original_settings, lower_limit=lower, upper_limit=upper)
+    original_assumptions = tuple(snapshot["assumptions"])
+    revised_assumptions = original_assumptions if assumptions is None else tuple(assumptions)
+    if settings == original_settings and revised_assumptions == original_assumptions:
+        return report
+    evidence = (revise_report_evidence(report.evidence, settings=asdict(settings), scope=revised_assumptions)
+                if report.evidence is not None else None)
+    result = report._result_for_reassessment()
+    return AnalysisReport(
+        settings=settings, dimensions=tuple(Dimension(**item) for item in snapshot["dimensions"]),
+        result=result, acceptance=assess_acceptance(result, lower, upper),
+        fit_at_zero=FitAssessment(**snapshot["fit_at_zero"]),
+        contributions=tuple(VarianceContribution(**item) for item in snapshot["contributions"]),
+        assumptions=revised_assumptions, evidence=evidence,
+    )
 
 
-def analyze_stack(stack: Stack, settings: AnalysisSettings | None = None) -> AnalysisReport:
+def analyze_stack(stack: Stack, settings: AnalysisSettings | None = None, *, report_context=None) -> AnalysisReport:
     settings = settings or AnalysisSettings()
     dimensions = tuple(validated_dimension(d, f"Row {i + 1}") for i, d in enumerate(stack.dimensions))
     if not dimensions:
         raise ValueError("Add at least one dimension.")
-    validated = Stack(list(dimensions))
-    contributions = rank_contributions(validated, settings.default_cpk)
-    if settings.method == "monte_carlo":
-        result = validated.monte_carlo(settings.iterations, settings.default_cpk, seed=settings.seed)
-    elif settings.method == "rss":
-        result = validated.rss()
-    else:
-        result = validated.worst_case()
-    summary_values = (result.mean, result.std_dev, result.minimum, result.maximum) if isinstance(result, MonteCarloResult) else (result.nominal, result.lower_limit, result.upper_limit)
-    for value in summary_values:
-        finite_number(value, "Analysis result (check input magnitude)")
     assumptions = [
         "Linear scalar response; independent sources; sensitivity coefficients are +1 or -1.",
         "Contribution ranking uses exact model variances, including asymmetric mean shifts.",
@@ -241,10 +295,27 @@ def analyze_stack(stack: Stack, settings: AnalysisSettings | None = None) -> Ana
         assumptions.append("Normal samples are unbounded and are not clipped to drawing tolerance limits.")
     else:
         assumptions.append("Worst-case limits bound inputs inside drawing tolerances, not unbounded normal process samples.")
+    evidence = build_report_evidence(
+        "independent_linear_scalar_stack", {"dimensions": [asdict(item) for item in dimensions]},
+        settings=asdict(settings), units=(report_context or {}).get("units"),
+        context=report_context, scope=assumptions, solver="independent_scalar_stack",
+    )
+    validated = Stack(list(dimensions))
+    contributions = rank_contributions(validated, settings.default_cpk)
+    if settings.method == "monte_carlo":
+        result = validated.monte_carlo(settings.iterations, settings.default_cpk, seed=settings.seed)
+    elif settings.method == "rss":
+        result = validated.rss()
+    else:
+        result = validated.worst_case()
+    summary_values = (result.mean, result.std_dev, result.minimum, result.maximum) if isinstance(result, MonteCarloResult) else (result.nominal, result.lower_limit, result.upper_limit)
+    for value in summary_values:
+        finite_number(value, "Analysis result (check input magnitude)")
     return AnalysisReport(
         settings=settings, dimensions=dimensions, result=result,
         acceptance=assess_acceptance(result, settings.lower_limit, settings.upper_limit),
         fit_at_zero=validated.assess_fit(result, 0.0),
         contributions=contributions,
         assumptions=tuple(assumptions),
+        evidence=evidence,
     )

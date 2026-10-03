@@ -21,6 +21,7 @@ from tolstack.gdt import (
 from gui.theme import COLORS, style_axes
 from gui.datum_inspection import DatumInspectionMixin, DATUM_STYLES
 from tolstack.analysis import parse_optional_cpk, parse_seed
+from tolstack.reporting import build_report_evidence, project_report_context
 
 # Column layout for self.pattern_table - kept short since this table lives
 # in a ~350-450px sidebar; the full meaning of each is in the tab's own
@@ -256,11 +257,31 @@ class GdtMixin(DatumInspectionMixin):
         self._update_inspected_datum_label()
 
     def build_datum_frame(self):
+        self._invalidate_gdt_results()
         self._current_drf = None
         if any(self._datum_slot[s] is None for s in ("Primary", "Secondary", "Tertiary")):
             self._refresh_datum_inspection()
             QMessageBox.warning(self, "Missing datums", "Pick a Primary, Secondary, and Tertiary datum first.")
             return
+
+        if getattr(self, "_project_preserve_raw_geometry", False):
+            # Recovery retains raw selections for correction. Their cached
+            # coordinates cannot qualify a frame until every feature is
+            # attached to supported geometry in the current scene.
+            refreshed = {}
+            for slot, entry in self._datum_slot.items():
+                info = getattr(self, "_entity_by_feature_id", {}).get(entry.get("feature_id"))
+                geometry = (self._gdt_extract_datum_geometry(info)
+                            if info is not None else (None, None, None))
+                point, direction, description = geometry
+                if point is None or direction is None:
+                    self.drf_status_label.setText("Reattach recovered datum geometry before building the frame.")
+                    self._refresh_datum_inspection()
+                    QMessageBox.warning(self, "Unresolved datum", f"Reattach valid geometry for datum {slot} before evaluation.")
+                    return
+                refreshed[slot] = {**entry, "point": point, "direction": direction,
+                                   "description": description, "kind": self._gdt_datum_kind(info)}
+            self._datum_slot.update(refreshed)
 
         try:
             def to_datum_feature(entry):
@@ -277,6 +298,9 @@ class GdtMixin(DatumInspectionMixin):
             return
 
         origin = self._current_drf.origin
+        refresh_actual = getattr(self, "_project_refresh_pattern_actual_values", None)
+        if refresh_actual is not None:
+            refresh_actual()
         self._refresh_datum_inspection()
         self.drf_status_label.setText(
             f"DRF origin in model coordinates ({self.project.units.length}): "
@@ -430,8 +454,8 @@ class GdtMixin(DatumInspectionMixin):
                 self.pattern_table.setItem(row, 9, item)
             self.pattern_table.blockSignals(previous)
 
-    def _gdt_report_base(self, control):
-        return {
+    def _gdt_report_base(self, control, *, settings=None):
+        report = {
             "report_type": "cad_position_prediction", "units": self.project.units.length,
             "control": asdict(control), "datum_frame": {
                 name: getattr(self._current_drf, name).tolist()
@@ -442,6 +466,26 @@ class GdtMixin(DatumInspectionMixin):
                             "Single-segment position and size; parallel feature axes; no datum mobility, form or general orientation.",
                             "Independent XY/size process samples; no full assembly variation model."],
         }
+        context_builder = getattr(self, "_analysis_report_context", None)
+        context = context_builder() if context_builder else project_report_context(self.project)
+        if any(source.get("kind") == "cad" and (
+                source.get("loaded_hash_status") != "verified"
+                or source.get("loaded_capture_basis") != "verified_geometry_source_bytes"
+                or not source.get("loaded_sha256")) for source in context.get("sources", [])):
+            report["limitations"].append(
+                "Source hashes identify referenced files at evaluation; loaded geometry revision equivalence is unverified."
+            )
+        report["evidence"] = build_report_evidence(
+            "cad_position_prediction",
+            {"control": report["control"], "datum_frame": report["datum_frame"],
+             "datum_assignments": [{"slot": slot, "feature_id": entry.get("feature_id"),
+                                     "kind": entry.get("kind", "plane")}
+                                    for slot, entry in getattr(self, "_datum_slot", {}).items() if entry is not None]},
+            settings=settings or {"method": "as_modeled"},
+            units={"length": self.project.units.length, "angle": self.project.units.angle},
+            context=context, scope=report["limitations"], solver="bounded_cad_position_size",
+        ).to_dict()
+        return report
 
     def _export_gdt_report(self):
         report = getattr(self, "_last_gdt_report", None)
@@ -462,6 +506,7 @@ class GdtMixin(DatumInspectionMixin):
             return
 
         try:
+            report = self._gdt_report_base(control, settings={"method": "as_modeled"})
             results = evaluate_pattern_nominal(control)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid GD&T definition", str(exc))
@@ -485,7 +530,7 @@ class GdtMixin(DatumInspectionMixin):
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self.pattern_table.setItem(row, 9, item)
         self.pattern_table.resizeColumnsToContents()
-        self._last_gdt_report = self._gdt_report_base(control)
+        self._last_gdt_report = report
         self._last_gdt_report.update(method="as_modeled", features=[
             {"name": name, "evaluation": asdict(evaluation)} for name, evaluation in results])
 
@@ -522,13 +567,16 @@ class GdtMixin(DatumInspectionMixin):
             default_cpk = parse_optional_cpk(self.gdt_default_cpk_input.text(), "GD&T Cpk")
             seed_widget = getattr(self, "seed_input", None)
             seed = parse_seed(seed_widget.text()) if seed_widget is not None else None
+            report = self._gdt_report_base(control, settings={
+                "method": "monte_carlo", "iterations": iterations, "default_cpk": default_cpk, "seed": seed,
+            })
             mc = run_pattern_monte_carlo(control, iterations=iterations, default_cpk=default_cpk, seed=seed)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid Cpk", str(exc))
             return
 
         labels = self.gdt_result_labels
-        self._last_gdt_report = self._gdt_report_base(control)
+        self._last_gdt_report = report
         self._last_gdt_report.update(
             method="monte_carlo", iterations=iterations, default_cpk=default_cpk, seed=seed,
             pattern_fail_rate=mc.pattern_fail_rate, per_feature_fail_rate=mc.per_feature_fail_rate,

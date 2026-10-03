@@ -5,6 +5,20 @@ $oldCadProfile = $env:TOLFORGE_BUILD_CAD
 $oldQtPlatform = $env:QT_QPA_PLATFORM
 Push-Location $PSScriptRoot
 try {
+    $sourceRevision = git rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) { throw "Build from the primary Git checkout so the artifact has source provenance." }
+    $sourceBranch = git branch --show-current
+    if ($LASTEXITCODE -ne 0) { throw "Could not determine the source branch." }
+    $sourceChanges = @(git status --porcelain --untracked-files=normal)
+    if ($LASTEXITCODE -ne 0) { throw "Could not determine the source working-tree state." }
+    $sourceProvenance = [ordered]@{
+        schema_version = 1
+        source_revision = $sourceRevision.Trim()
+        source_branch = ([string]$sourceBranch).Trim()
+        source_dirty = ($sourceChanges.Count -gt 0)
+        cad_profile = [bool]$IncludeCad
+        build_started_utc = [DateTime]::UtcNow.ToString('o')
+    }
     if (-not $SkipDependencyInstall) {
         Write-Host "Installing the declared build dependencies..."
         python -m pip install -r requirements.txt '.[build]'
@@ -12,7 +26,11 @@ try {
     }
 
     $env:QT_QPA_PLATFORM = 'offscreen'
-    python -m pytest tests -q
+    if ($IncludeCad) {
+        python -m pytest tests -q --require-native-cad
+    } else {
+        python -m pytest tests -q -m 'not native_cad'
+    }
     if ($LASTEXITCODE -ne 0) { throw "Tests failed; the executable was not built." }
 
     if ($IncludeCad) {
@@ -48,6 +66,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Dependency manifest generation failed." }
     Get-FileHash -LiteralPath $executable -Algorithm SHA256 | Format-List | Out-String |
         Set-Content -LiteralPath (Join-Path $PSScriptRoot 'dist\SHA256.txt')
+    $sourceProvenance | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'dist\source-provenance.json') -Encoding utf8
     Write-Host "Build and packaging smoke check passed: $executable"
 } finally {
     $env:TOLFORGE_BUILD_CAD = $oldCadProfile

@@ -14,8 +14,9 @@ from test_offset_preview import window, face
 
 
 @pytest.mark.parametrize("radius,height,angle", [(2, 12, 2 * np.pi), (12, 2, 2 * np.pi), (3, 6, np.pi / 2)])
+@pytest.mark.native_cad
+@pytest.mark.usefixtures("native_cad_backend")
 def test_real_step_cylinder_recognition_is_independent_of_shape_proportions(tmp_path, radius, height, angle):
-    pytest.importorskip("OCC.Core.BRepPrimAPI")
     from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCC.Core.gp import gp_Ax2, gp_Pnt, gp_Dir
     from compas_occ.brep import OCCBrep
@@ -36,8 +37,9 @@ def test_real_step_cylinder_recognition_is_independent_of_shape_proportions(tmp_
     assert any(surface["kind"] == "plane" for surface in result.face_surfaces)
 
 
+@pytest.mark.native_cad
+@pytest.mark.usefixtures("native_cad_backend")
 def test_conical_surface_is_not_misidentified_as_a_cylinder():
-    pytest.importorskip("OCC.Core.BRepPrimAPI")
     from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCone
     from compas_occ.brep import OCCBrep
     faces = OCCBrep.from_shape(BRepPrimAPI_MakeCone(4, 2, 8).Shape()).faces

@@ -2,8 +2,44 @@
 
 [Documentation home](../README.md)
 
-These notes describe the implemented numerical model in `Code/tolstack/gdt.py`.
+These notes describe the implemented numerical models in `Code/tolstack/gdt.py`
+and `Code/tolstack/inspection.py`.
 They do not establish general drawing-standard conformance.
+
+## Two sources of position data
+
+**Study** evaluates measurements supplied by an inspection system. Each feature
+has drawing basic XY, measured XY, a measured diameter, size bounds, a diametral
+position tolerance, RFS/MMC/LMC modifier, and hole/pin kind. The coordinates must
+already share the stated measurement datum frame; the app does not fit measured
+datums or estimate an alignment transform. Drawing/revision, measurement source,
+datum alignment, units, and explicit scope confirmation accompany the result.
+
+**GD&T** derives pattern coordinates from CAD geometry projected into a supported
+constructed frame, then evaluates that geometry or samples assumed process
+variation. CAD coordinates are not substituted for measured part data. The same
+size/position equations below serve both paths, but their evidence and intended
+use differ.
+
+Inspection accepts a consistent dataset in mm or in without conversion. The
+CAD/GD&T workspace currently requires mm and deg. Axes must be parallel to datum
+Z, and the position control must be single-segment without datum mobility. The
+provided diameter check does not establish complete feature-of-size form/envelope
+conformance. No uncertainty guard band or decision rule is applied. A reported
+pass means only that the requested supported check passes this bounded model.
+With an inventory, Study evaluates `position` and `size` separately using each
+control's specification, stable ID and measured-feature link. A position datum
+reference must match the dataset frame. Unsupported, unlinked and unverified
+alignment controls remain explicit coverage gaps. Without an inventory, each
+row retains the older combined size/position result and drawing coverage is
+unknown. Other drawing controls require their own evaluation.
+
+Reports retain the exact evaluation-time controls, submitted measurements,
+effective inputs and constructed CAD frame separately from live editor state.
+Their evidence identifies project/study, settings, units, input digest, source
+hash availability and software/runtime versions. A referenced STEP hash alone
+does not verify the revision of geometry already loaded in memory. See
+[report traceability](user-guide.md#report-traceability).
 
 ## Datum reference frames
 
@@ -69,6 +105,18 @@ overlap and should not be added together.
 Sampling uses uniform bounds when no Cpk applies, otherwise split-normal
 sampling with separate positive/negative sigmas. Normal samples can fall
 outside size limits; the acceptance checks still apply to those samples.
+
+XY process sampling bounds are independent inputs; a drawing's diametral
+position zone does not define an XY probability distribution. A Cpk input is a
+sampling assumption, not capability estimated from inspection data. A recorded
+seed supports repeatable comparisons for unchanged inputs. Predicted failure
+rates are empirical sample estimates, and zero observed failures is not a
+six-sigma qualification.
+
+For inspection, edits invalidate the previous result. JSON export includes the
+input snapshot, per-feature evaluations, source/alignment references, and model
+limitations so reviewers can distinguish the supported checks from disposition
+of the entire part.
 
 ## Diametral mating boundaries
 

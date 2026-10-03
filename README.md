@@ -1,5 +1,16 @@
 # TolForge
 
+The Study workspace records requested drawing controls and reports their
+evaluation coverage, including unsupported callouts. Scalar, inspection and
+CAD-position reports retain evaluation-time traceability. Project transitions
+guard unsaved changes, and separate recovery drafts preserve incomplete work.
+See the [user guide](docs/user-guide.md) and
+[implementation evidence](docs/implementation-i05-i12-f01.md).
+STEP loads support cancellation and deferred close, saved CAD features have a
+guided relinking/revision review, and generic aligned CSV imports support a
+mapping preview with measurement provenance. See
+[I09/I11/F02 implementation evidence](docs/implementation-i09-i11-f02.md).
+
 TolForge is a desktop application and Python library for mechanical tolerance
 stack analysis, STEP inspection, and a limited set of GD&T position checks.
 It uses PySide6, NumPy, Matplotlib, COMPAS, and OpenCASCADE.
@@ -19,14 +30,16 @@ It uses PySide6, NumPy, Matplotlib, COMPAS, and OpenCASCADE.
 
 ## Current capabilities
 
-- Worst Case, RSS, and Monte Carlo stacks with asymmetric tolerances and
-  optional per-dimension/global Cpk sampling parameters.
+- Worst Case, RSS, and seeded Monte Carlo stacks with asymmetric tolerances,
+  functional acceptance intervals, variance contributors, and JSON reports.
 - Editable stack tables, a reusable dimension bank, and interactive acceptance
   intervals on Monte Carlo histograms.
 - STEP viewing with face, edge, vertex, and whole-solid selection, plus
   contextual measurement, datum, pattern, and stack-link actions.
-- A resizable viewport and workspace panel, with Inspect, Library, Stack,
+- A resizable viewport and workspace panel, with Inspect, Study, Library, Stack,
   Results, Measure, GD&T, and Eclipse navigation.
+- Measured-part Study with drawing/source/alignment references, CSV import,
+  per-feature size/position checks, persisted inputs, and report invalidation.
 - Live nominal-relative surface previews with numeric/slider controls,
   direction reversal, and lower/upper tolerance layers.
 - Color-coded A/B/C datum geometry, labeled axes and origin, and analytic
@@ -37,11 +50,16 @@ It uses PySide6, NumPy, Matplotlib, COMPAS, and OpenCASCADE.
 
 ## Run from source
 
+The primary source checkout on this workstation is **`D:\GIT\REPOS\TolForge`**.
+`D:\TolForge` is the preserved earlier workspace; its `MEMORY` folder remains
+the external project vault. Edit, test, launch, and build from the primary Git
+checkout. An older source copy or executable does not contain new edits.
+
 Use an interpreter containing the dependencies in [requirements.txt](requirements.txt):
 
 ```powershell
 python -m pip install -r requirements.txt
-python Code/gui/app.py
+.\launch.ps1
 ```
 
 STEP import additionally requires `compas_occ` and its compatible
@@ -50,14 +68,19 @@ STEP import additionally requires `compas_occ` and its compatible
 The GUI imports COMPAS modules even when no STEP file is loaded; installing
 only PySide6, NumPy, and Matplotlib is insufficient for the current GUI.
 
-The configured local VS Code checkout is `D:\GIT\REPOS\TolForge`, with
-`D:\PROGRAMS\PYTHON\python.exe` used for the source application. Run the
-`Code/gui/app.py` in that checkout. A different source copy or an old
-`dist/TolForge.exe` will not show edits to this checkout. Restart the app after
-source changes; reload the STEP file after geometry-recognition changes.
+`launch.ps1` always runs the `Code/gui/app.py` beside that script, including when
+called from another directory. It prints the source and interpreter paths. The
+local CAD-capable interpreter can be selected explicitly:
 
-Package metadata currently requires Python 3.11+, while the local source
-runtime is Python 3.10. See the development guide before changing interpreters.
+```powershell
+& 'D:\GIT\REPOS\TolForge\launch.ps1' -Python 'D:\PROGRAMS\PYTHON\python.exe'
+```
+
+Package metadata requires Python 3.10+. The direct command
+`python Code/gui/app.py` also works from the primary root. Restart after source
+changes and reload STEP after geometry-recognition changes. Release builds
+retain source revision, build profile, dependency and executable-hash evidence;
+see [provenance and project memory](docs/development.md#source-provenance-and-project-memory).
 
 ## Python library example
 

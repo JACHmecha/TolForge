@@ -213,7 +213,8 @@ def test_changing_traceability_or_alignment_requires_new_inspection_evaluation(w
 
 
 def test_inspection_csv_import_is_atomic_on_invalid_row(window, monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QFileDialog, QDialog
+    from gui.inspection_import_dialog import ImportAlignedCsvDialog
 
     _enter_inspection(window)
     path = tmp_path / "measurements.csv"
@@ -223,9 +224,18 @@ def test_inspection_csv_import_is_atomic_on_invalid_row(window, monkeypatch, tmp
         writer.writerow(_row(name="Hole 2"))
         writer.writerow(_row(name="Hole 3", measured_x="nan"))
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), "CSV (*.csv)"))
+    errors = []
+    def review_invalid(dialog):
+        dialog.alignment_method_input.setText("CMM 17")
+        dialog.alignment_check.setChecked(True)
+        assert not dialog.preview.valid
+        errors.append(dialog.errors_label.text())
+        return QDialog.Rejected
+    monkeypatch.setattr(ImportAlignedCsvDialog, "exec", review_invalid)
     window._inspection_import_csv()
     assert window.inspection_table.rowCount() == 1
-    assert window._test_warnings[-1][0] == "Could not import measurements"
+    assert "Row 3 · measured_x: expected a finite number" in errors[0]
+    assert not window._test_warnings
 
 
 def test_project_save_open_restores_inspection_draft_but_requires_rerun(window, monkeypatch, tmp_path):

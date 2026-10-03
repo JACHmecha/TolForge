@@ -49,7 +49,22 @@ class PatternHarness(ProjectMixin, GdtMixin):
         self.gdt_feature_kind_combo.addItems(["hole", "pin"])
         self.step_status_label = QLabel()
         self._current_drf = Frame()
-        self._datum_slot = {name: {} for name in ("Primary", "Secondary", "Tertiary")}
+        self._datum_slot = {}
+        for slot, normal in (("Primary", [0.0, 0.0, 1.0]),
+                             ("Secondary", [0.0, 1.0, 0.0]),
+                             ("Tertiary", [1.0, 0.0, 0.0])):
+            feature_id = f"datum-plane-{slot.lower()}"
+            self._datum_slot[slot] = {"feature_id": feature_id}
+            self._entity_by_feature_id[feature_id] = {
+                "feature_id": feature_id,
+                "plane": {"point": np.zeros(3), "normal": np.array(normal)},
+            }
+
+    def _gdt_extract_datum_geometry(self, info):
+        plane = info.get("plane")
+        if plane is None:
+            return None, None, "Unsupported datum geometry"
+        return plane["point"], plane["normal"], "Matched datum plane"
 
     def _measure_ensure_circle_fit(self, info):
         pass
@@ -72,8 +87,16 @@ def populate_pattern(harness):
     feature = harness.project.add_feature(
         FeatureDefinition(part.id, "Hole 1", "circle", id="feature-1")
     )
-    datum = harness.project.add_datum_reference(DatumReference(feature.id, "A", id="datum-1"))
-    system = harness.project.add_datum_system(DatumSystem("DRF", [datum.id], id="drf-1"))
+    datum_ids = []
+    for number, (slot, entry) in enumerate(harness._datum_slot.items(), start=1):
+        datum_feature = harness.project.add_feature(
+            FeatureDefinition(part.id, f"Datum {slot}", "plane", id=entry["feature_id"])
+        )
+        datum = harness.project.add_datum_reference(
+            DatumReference(datum_feature.id, "ABC"[number - 1], id=f"datum-{number}")
+        )
+        datum_ids.append(datum.id)
+    system = harness.project.add_datum_system(DatumSystem("DRF", datum_ids, id="drf-1"))
     harness._active_part_id = part.id
     harness._active_datum_system_id = system.id
     y = 1.234567891234

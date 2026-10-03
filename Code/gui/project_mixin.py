@@ -14,14 +14,18 @@ from tolstack import (
     PositionPatternMember,
 )
 from tolstack.domain import new_id
-from tolstack.features import FeatureSignature, match_signature, signature_from_points
+from tolstack.features import signature_from_points
+from tolstack.relinking import plan_relinking, portable_source_path, resolve_source_path, source_revision_status
 from tolstack.gdt import PatternFeature, PatternPositionControl
 from tolstack.workflow import validate_workspace_project, require_supported_distribution
+from tolstack.persistence import backup_path
 from gui.analysis_mixin import AnalysisMixin
 from gui.gdt_mixin import pattern_cell_value
+from gui.project_lifecycle import ProjectLifecycleMixin
+from gui.feature_relinking import FeatureRelinkingMixin
 
 
-class ProjectMixin:
+class ProjectMixin(FeatureRelinkingMixin, ProjectLifecycleMixin):
     """Owns the current Project and translates GUI state at its boundary."""
 
     TOLERANCE_ID_ROLE = Qt.UserRole + 201
@@ -35,19 +39,27 @@ class ProjectMixin:
     def _project_init_state(self):
         self.project = Project("Untitled")
         self._project_path = None
+        self._project_recovered_from = None
         self._active_part_id = None
         self._active_occurrence_id = None
         self._active_datum_system_id = None
         self._active_position_control_id = None
         self._entity_by_feature_id = {}
+        self._project_pending_raw_geometry = None
+        self._project_step_precommit_was_dirty = None
+        self._project_clear_loaded_source_evidence()
+        self._project_lifecycle_init()
 
     def _project_install_menu(self):
         menu = self.menuBar().addMenu("&File")
         actions = (
             ("&New Project", self.new_project),
             ("&Open Project...", self.open_project),
+            ("Open &Previous Saved Version...", self.open_previous_project),
             ("&Save Project", self.save_project),
             ("Save Project &As...", self.save_project_as),
+            ("Save &Recovery Draft...", self.save_recovery_draft),
+            ("Recover &Incomplete Work...", self.open_recovery_draft),
         )
         for text, slot in actions:
             action = QAction(text, self)
@@ -55,72 +67,123 @@ class ProjectMixin:
             menu.addAction(action)
 
     def new_project(self):
-        self.project = Project("Untitled")
-        self._project_path = None
-        self._active_part_id = None
-        self._active_occurrence_id = None
-        self._active_datum_system_id = None
-        self._active_position_control_id = None
-        self._entity_by_feature_id = {}
-        self.table.setRowCount(0)
-        self.pattern_table.setRowCount(0)
-        for slot in ("Primary", "Secondary", "Tertiary"):
-            self._datum_slot[slot] = None
-        self._current_drf = None
-        self._update_datum_labels()
-        self.drf_status_label.setText("Datum reference frame not built yet.")
-        self.clear_step_preview()
+        if not self._project_may_replace("creating a new project"):
+            return False
+        self._project_clear_auto_draft()
+        with self._project_suspend_changes():
+            self._project_preserve_raw_geometry = False
+            self._project_pending_raw_geometry = None
+            self._project_step_precommit_was_dirty = None
+            self.project = Project("Untitled")
+            self._project_path = None
+            self._project_recovered_from = None
+            self._active_part_id = None
+            self._active_occurrence_id = None
+            self._active_datum_system_id = None
+            self._active_position_control_id = None
+            self._entity_by_feature_id = {}
+            self._project_clear_loaded_source_evidence()
+            self.table.setRowCount(0)
+            self.pattern_table.setRowCount(0)
+            for slot in ("Primary", "Secondary", "Tertiary"):
+                self._datum_slot[slot] = None
+            self._current_drf = None
+            self._update_datum_labels()
+            self.drf_status_label.setText("Datum reference frame not built yet.")
+            self.clear_step_preview()
+            self._study_restore()
+        self._project_mark_clean()
         self._project_update_title()
-        self._study_restore()
+        return True
 
     def open_project(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open TolForge project", "", "TolForge projects (*.tolforge.json);;JSON (*.json)"
         )
         if not path:
-            return
+            return False
+        return self._project_open_from(path)
+
+    def open_previous_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose project to recover", "",
+            "TolForge projects (*.tolforge.json);;JSON (*.json);;All files (*)",
+        )
+        if not path:
+            return False
+        return self._project_open_from(backup_path(path), recovered_from=path)
+
+    def _project_open_from(self, path, *, recovered_from=None):
         try:
             project = Project.load(path)
             validate_workspace_project(project)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             QMessageBox.warning(self, "Could not open project", str(exc))
-            return
+            return False
+        if not self._project_may_replace("opening another project"):
+            return False
+        if self._project_guard_saved:
+            try:
+                # The guard can save to the selected file (or rotate its
+                # previous version). Load what is actually on disk now.
+                project = Project.load(path)
+                validate_workspace_project(project)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                QMessageBox.warning(self, "Could not open project", str(exc))
+                return False
 
-        self.clear_step_preview()
-        self.project = project
-        self._project_path = path
-        self._active_part_id = next(iter(project.parts), None)
-        self._active_occurrence_id = next(
-            (item.id for item in project.occurrences.values()
-             if item.part_definition_id == self._active_part_id),
-            None,
-        )
-        self._active_datum_system_id = next(iter(project.datum_systems), None)
-        self._active_position_control_id = next(iter(project.position_controls), None)
-        self._entity_by_feature_id = {}
-        self._project_restore_stack_to_ui()
-        self._study_restore()
-        self.pattern_table.setRowCount(0)
-        for slot in ("Primary", "Secondary", "Tertiary"):
-            self._datum_slot[slot] = None
-        self._current_drf = None
-        self._update_datum_labels()
-        self.drf_status_label.setText("Datum reference frame awaiting geometry.")
+        self._project_clear_auto_draft()
+        with self._project_suspend_changes():
+            self._project_preserve_raw_geometry = False
+            self._project_pending_raw_geometry = None
+            self._project_step_precommit_was_dirty = None
+            self.clear_step_preview()
+            self.project = project
+            # Recovery always requires Save As; opening a backup does not
+            # establish a destination that a later Save could overwrite.
+            self._project_path = None if recovered_from is not None else str(path)
+            self._project_recovered_from = str(recovered_from) if recovered_from is not None else None
+            self._active_part_id = next(iter(project.parts), None)
+            self._active_occurrence_id = next(
+                (item.id for item in project.occurrences.values()
+                 if item.part_definition_id == self._active_part_id), None,
+            )
+            self._active_datum_system_id = next(iter(project.datum_systems), None)
+            self._active_position_control_id = next(iter(project.position_controls), None)
+            self._entity_by_feature_id = {}
+            self._project_clear_loaded_source_evidence()
+            self._project_restore_stack_to_ui()
+            self._study_restore()
+            self.pattern_table.setRowCount(0)
+            for slot in ("Primary", "Secondary", "Tertiary"):
+                self._datum_slot[slot] = None
+            self._current_drf = None
+            self._update_datum_labels()
+            self.drf_status_label.setText("Datum reference frame awaiting geometry.")
+            self._project_restore_position_control()
+        self._project_mark_clean(recovered=recovered_from is not None)
         self._project_update_title()
 
         part = project.parts.get(self._active_part_id)
-        if part and part.source_file and Path(part.source_file).is_file():
-            self._start_step_load(part.source_file)
+        source = self._project_resolve_source(part) if part else None
+        if source is not None and source.is_file():
+            self._start_step_load(str(source))
+            self._project_loading_clean_from_disk = recovered_from is None and self._step_load_thread is not None
         else:
             self.step_status_label.setText(
                 "Project loaded. Its STEP source is unavailable; choose Load STEP to relink geometry."
             )
+        if recovered_from is not None:
+            self.step_status_label.setText(
+                f"Recovered previous version of {Path(recovered_from).name}. "
+                "Use Save As to keep it."
+            )
+        return True
 
     def save_project(self):
         if self._project_path is None:
-            self.save_project_as()
-            return
-        self._project_save_to(self._project_path)
+            return self.save_project_as()
+        return self._project_save_to(self._project_path)
 
     def save_project_as(self):
         default_name = f"{self.project.name or 'project'}.tolforge.json"
@@ -129,55 +192,106 @@ class ProjectMixin:
             "TolForge projects (*.tolforge.json);;JSON (*.json)",
         )
         if not path:
-            return
+            return False
         if not path.lower().endswith(".json"):
             path += ".tolforge.json"
-        self._project_save_to(path)
+        return self._project_save_to(path)
 
     def _project_save_to(self, path: str):
         previous = deepcopy(self.project)
+        previous_active_ids = {
+            name: getattr(self, name)
+            for name in ("_active_datum_system_id", "_active_position_control_id")
+        }
         try:
-            self._study_capture()
-            datum_count = sum(entry is not None for entry in self._datum_slot.values())
-            if datum_count not in (0, 3) or (self.project.datum_systems and datum_count != 3):
-                raise ValueError("Complete the A/B/C datum selection before saving. The existing saved datum system has not been replaced.")
-            if self.project.position_controls and not self.pattern_table.rowCount():
-                if any(member.feature_id not in self._entity_by_feature_id
-                       for control in self.project.position_controls.values() for member in control.members):
-                    raise ValueError("Reattach the saved pattern geometry before saving; unresolved definitions must not be discarded.")
-            self._project_sync_stack_from_ui()
-            self._project_sync_datums_from_ui()
-            self._project_sync_position_from_ui()
-            self.project.save(path)
-        except (OSError, ValueError) as exc:
+            with self._project_suspend_changes():
+                if getattr(self, "_project_revision_pending", False):
+                    raise ValueError("Review and accept the loaded CAD revision before saving an engineering project.")
+                self._study_capture()
+                datum_count = sum(entry is not None for entry in self._datum_slot.values())
+                if datum_count not in (0, 3) or (self.project.datum_systems and datum_count != 3):
+                    raise ValueError("Complete the A/B/C datum selection before saving. The existing saved datum system has not been replaced.")
+                if self.project.position_controls and not self.pattern_table.rowCount():
+                    if any(member.feature_id not in self._entity_by_feature_id
+                           for control in self.project.position_controls.values() for member in control.members):
+                        raise ValueError("Reattach the saved pattern geometry before saving; unresolved definitions must not be discarded.")
+                self._project_sync_stack_from_ui()
+                self._project_sync_datums_from_ui()
+                self._project_sync_position_from_ui()
+                # Save As rebases each known path against the new project
+                # location; loaded evidence continues to use absolute paths.
+                for part in self.project.parts.values():
+                    source = self._project_resolve_source(part)
+                    if source is not None:
+                        part.source_file = portable_source_path(source, path)
+                self.project.save(path)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
             self.project = previous
+            for name, value in previous_active_ids.items():
+                setattr(self, name, value)
             QMessageBox.warning(self, "Could not save project", str(exc))
-            return
+            self._project_note_change()
+            return False
         self._project_path = path
+        self._project_recovered_from = None
+        self._project_preserve_raw_geometry = False
+        self._project_clear_auto_draft()
+        self._project_mark_clean()
         self._project_update_title()
         self.step_status_label.setText(f"Saved project: {Path(path).name}")
+        return True
 
     def _project_update_title(self):
         suffix = Path(self._project_path).name if self._project_path else "Unsaved"
-        self.setWindowTitle(f"Tol-Forge — {self.project.name} [{suffix}]")
+        changed = " *" if getattr(self, "_project_dirty", False) else ""
+        self.setWindowTitle(f"Tol-Forge — {self.project.name}{changed} [{suffix}]")
 
     # ------------------------------------------------------------------
     # STEP source and stable feature identities
     # ------------------------------------------------------------------
 
-    def _project_on_step_loaded(self, path: str):
+    def _project_resolve_source(self, part):
+        return resolve_source_path(part.source_file, self._project_path or getattr(self, "_project_recovered_from", None))
+
+    def locate_project_source(self):
+        part = self.project.parts.get(self._active_part_id)
+        source = self._project_resolve_source(part) if part else None
+        path, _ = QFileDialog.getOpenFileName(self, "Locate or reload CAD source", str(source or ""),
+                                             "STEP files (*.step *.stp)")
+        if not path:
+            return False
+        if part is not None:
+            self._project_preserve_raw_geometry = True
+        self._start_step_load(path)
+        return True
+
+    def _project_report_sources(self):
+        descriptors = []
+        for part in self.project.parts.values():
+            loaded = getattr(self, "_project_loaded_source_evidence", {}).get(part.id, {})
+            source = self._project_resolve_source(part)
+            descriptors.append({"kind": "cad", "part_id": part.id, "reference": part.name,
+                                "path": loaded.get("path") or (str(source) if source is not None else None),
+                                "expected_sha256": part.source_sha256, **loaded})
+        return descriptors
+
+    def _project_on_step_loaded(self, path: str, *, source_sha256=None, source_hash_status="unverified"):
+        precommit_dirty = getattr(self, "_project_step_precommit_was_dirty", None)
+        was_dirty = self._project_is_dirty() if precommit_dirty is None else precommit_dirty
+        self._project_step_precommit_was_dirty = None
         normalized = str(Path(path).resolve())
         part = next(
             (item for item in self.project.parts.values()
-             if item.source_file and str(Path(item.source_file).resolve()) == normalized),
+             if self._project_resolve_source(item) == Path(normalized)),
             None,
         )
         # Opening a saved single-part project and choosing the same CAD file
         # from a new location is a relink, not a second part definition.
-        if part is None and self._project_path is not None and self._active_part_id:
+        loaded_project = (self._project_path is not None or getattr(self, "_project_recovered_from", None) is not None
+                          or getattr(self, "_project_preserve_raw_geometry", False))
+        if part is None and loaded_project and self._active_part_id:
             part = self.project.parts.get(self._active_part_id)
-            if part is not None:
-                part.source_file = normalized
+        existing_part = part is not None
         if part is None:
             part = self.project.add_part(
                 PartDefinition(name=Path(path).stem, source_file=normalized)
@@ -197,12 +311,65 @@ class ProjectMixin:
                 )
         self._active_part_id = part.id
         self._active_occurrence_id = occurrence.id
+        # Only the loader's digest of geometry-producing bytes establishes
+        # revision evidence. An arbitrary persisted hash is a comparison input.
+        import re
+        verified = (source_hash_status == "verified" and isinstance(source_sha256, str)
+                    and re.fullmatch(r"[0-9a-fA-F]{64}", source_sha256) is not None)
+        loaded_digest = source_sha256.lower() if verified else None
+        self._project_source_status = source_revision_status(part.source_sha256, loaded_digest,
+                                                            "verified" if verified else "unverified")
+        source_metadata_changed = (self._project_resolve_source(part) != Path(normalized)
+                                   or (verified and part.source_sha256 != loaded_digest))
+        self._project_revision_pending = bool(existing_part and part.source_sha256
+                                              and self._project_source_status != "unchanged")
+        self._project_loaded_source_evidence = getattr(self, "_project_loaded_source_evidence", {})
+        self._project_loaded_source_evidence[part.id] = {
+            "path": normalized, "loaded_sha256": loaded_digest,
+            "comparison_sha256": part.source_sha256,
+            "comparison_source_path": str(self._project_resolve_source(part)) if self._project_resolve_source(part) is not None else None,
+            "loaded_hash_status": "verified" if verified else "unverified",
+            "loaded_capture_basis": "verified_geometry_source_bytes" if verified else "unavailable",
+            "revision_status": self._project_source_status, "revision_accepted": not self._project_revision_pending,
+        }
+        if not self._project_revision_pending:
+            if self._project_resolve_source(part) != Path(normalized):
+                part.source_file = normalized
+            if verified:
+                part.source_sha256 = loaded_digest
         self._project_reattach_features()
         self._project_restore_stack_links()
-        self._project_restore_datums()
-        self._project_restore_position_control()
+        if getattr(self, "_project_preserve_raw_geometry", False):
+            self._project_restore_raw_geometry_after_load()
+        else:
+            self._project_restore_datums()
+            self._project_restore_position_control()
+        self._project_invalidate_all_reports()
+        if (getattr(self, "_project_loading_clean_from_disk", False) and not was_dirty
+                and not self._project_revision_pending and not source_metadata_changed):
+            self._project_mark_clean()
+        else:
+            self._project_note_change()
+        self._project_loading_clean_from_disk = False
+
+    def _project_accept_loaded_revision(self):
+        if not getattr(self, "_project_revision_pending", False):
+            return False
+        part = self.project.parts[self._active_part_id]
+        loaded = self._project_loaded_source_evidence[part.id]
+        part.source_file = loaded["path"]
+        part.source_sha256 = loaded["loaded_sha256"] if loaded["loaded_hash_status"] == "verified" else None
+        loaded["revision_accepted"] = True
+        self._project_revision_pending = False
+        self._project_reattach_features()
+        self._project_refresh_relinked_geometry()
+        self._project_invalidate_all_reports()
+        self._project_note_change()
+        return True
 
     def _project_register_feature(self, info: dict, label: str | None = None) -> str:
+        if getattr(self, "_project_revision_pending", False):
+            raise ValueError("Accept the loaded CAD revision before registering or reconnecting features.")
         current_id = info.get("feature_id")
         if current_id in self.project.features:
             return current_id
@@ -225,54 +392,37 @@ class ProjectMixin:
         )
         info["feature_id"] = feature.id
         self._entity_by_feature_id[feature.id] = info
+        self._project_note_change()
         return feature.id
 
     def _project_find_entity_info(self, feature_id: str) -> dict | None:
+        if getattr(self, "_project_revision_pending", False):
+            return None
         return self._entity_by_feature_id.get(feature_id)
 
     def _project_reattach_features(self):
         self._entity_by_feature_id = {}
-        saved = [
-            feature for feature in self.project.features.values()
-            if feature.part_definition_id == self._active_part_id and feature.signature
-        ]
-        if not saved:
-            return
-
-        infos = list(self._step_entity_info.values())
-        candidates_by_kind = {}
-        used = set()
-        unresolved = 0
-        for feature in saved:
-            target = FeatureSignature.from_dict(feature.signature)
-            if target.kind not in candidates_by_kind:
-                candidates = []
-                for info in infos:
-                    circle = None
-                    if target.kind == "circle" and info["type"] in ("face", "edge"):
-                        self._measure_ensure_circle_fit(info)
-                        circle = info.get("circle")
-                    candidates.append(
-                        signature_from_points(info["type"], info["points"], circle,
-                                              info.get("surface") if target.kind == "cylinder" else None)
-                    )
-                candidates_by_kind[target.kind] = candidates
-            candidates = candidates_by_kind[target.kind]
-            eligible = [(index, candidate) for index, candidate in enumerate(candidates)
-                        if candidate is not None and index not in used]
-            result = match_signature(target, [candidate for _, candidate in eligible])
-            if result.matched_index is None or result.confidence == "ambiguous":
-                unresolved += 1
-                continue
-            info_index = eligible[result.matched_index][0]
-            info = infos[info_index]
-            info["feature_id"] = feature.id
-            self._entity_by_feature_id[feature.id] = info
-            used.add(info_index)
-        if unresolved:
+        self._project_build_relink_candidates()
+        for info in self._project_relink_infos:
+            info.pop("feature_id", None)
+        saved = [feature for feature in self.project.features.values()
+                 if feature.part_definition_id == self._active_part_id]
+        self._project_relink_diagnostics = plan_relinking(
+            saved, self._project_relink_candidates,
+            auto_attach=not getattr(self, "_project_revision_pending", False),
+        )
+        for diagnostic in self._project_relink_diagnostics:
+            if diagnostic.matched_index is not None:
+                info = self._project_relink_infos[diagnostic.matched_index]
+                info["feature_id"] = diagnostic.feature_id
+                self._entity_by_feature_id[diagnostic.feature_id] = info
+        unresolved = sum(item.matched_index is None for item in self._project_relink_diagnostics)
+        if getattr(self, "_project_revision_pending", False):
             self.step_status_label.setText(
-                f"Geometry loaded; {unresolved} saved feature link(s) need manual relinking."
+                f"CAD revision {self._project_source_status}. Review saved features and accept the loaded revision to reconnect."
             )
+        elif unresolved:
+            self.step_status_label.setText(f"Geometry loaded; {unresolved} saved feature link(s) need guided relinking.")
 
     # ------------------------------------------------------------------
     # Stack table persistence
@@ -532,18 +682,14 @@ class ProjectMixin:
         self.gdt_mmc_size_input.setText(str(control.mmc_size))
         self.gdt_lmc_size_input.setText(str(control.lmc_size))
         self.gdt_feature_kind_combo.setCurrentText(control.feature_kind)
-        if self._current_drf is None:
-            return
-
         for member in control.members:
             info = self._entity_by_feature_id.get(member.feature_id)
-            if info is None:
-                continue
-            self._measure_ensure_circle_fit(info)
-            circle = info.get("circle")
-            if circle is None:
-                continue
-            actual_x, actual_y = self._current_drf.to_local_xy(circle["center"])
+            circle = None
+            if info is not None:
+                self._measure_ensure_circle_fit(info)
+                circle = info.get("circle")
+            resolved = self._current_drf is not None and circle is not None
+            actual_x, actual_y = self._current_drf.to_local_xy(circle["center"]) if resolved else (0.0, 0.0)
             size = self.project.tolerances[member.size_tolerance_id]
             x_variation = self.project.tolerances[member.position_x_tolerance_id]
             y_variation = self.project.tolerances[member.position_y_tolerance_id]
@@ -555,11 +701,39 @@ class ProjectMixin:
             self.pattern_table.item(row, 6).setText(str(x_variation.tolerance_plus))
             self.pattern_table.item(row, 7).setText(str(y_variation.tolerance_plus))
             self.pattern_table.item(row, 8).setText(str(size.tolerance_plus))
+            if not resolved:
+                self.pattern_table.item(row, 3).setText("Unresolved")
+                self.pattern_table.item(row, 4).setText("Unresolved")
+                self.pattern_table.item(row, 9).setText("Reattach geometry and rebuild frame")
             name_item = self.pattern_table.item(row, 0)
             name_item.setData(self.PATTERN_MEMBER_ID_ROLE, member.id)
             name_item.setData(self.PATTERN_SIZE_TOLERANCE_ID_ROLE, size.id)
             name_item.setData(self.PATTERN_X_TOLERANCE_ID_ROLE, x_variation.id)
             name_item.setData(self.PATTERN_Y_TOLERANCE_ID_ROLE, y_variation.id)
+
+    def _project_refresh_pattern_actual_values(self):
+        """Refresh CAD-derived coordinates after an explicit frame rebuild."""
+        if self._current_drf is None:
+            return
+        for row in range(self.pattern_table.rowCount()):
+            name_item = self.pattern_table.item(row, 0)
+            feature_id = name_item.data(self.PATTERN_FEATURE_ID_ROLE) if name_item else None
+            info = self._entity_by_feature_id.get(feature_id)
+            if info is None:
+                continue
+            self._measure_ensure_circle_fit(info)
+            circle = info.get("circle")
+            if circle is None:
+                continue
+            actual_x, actual_y = self._current_drf.to_local_xy(circle["center"])
+            for column, value in ((3, actual_x), (4, actual_y)):
+                item = self.pattern_table.item(row, column)
+                if item is not None:
+                    item.setData(Qt.EditRole, str(value))
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            status = self.pattern_table.item(row, 9)
+            if status is not None:
+                status.setText("-")
 
     @staticmethod
     def _cpk_from_distribution(distribution: Distribution) -> float | None:
@@ -569,8 +743,17 @@ class ProjectMixin:
         return float(value) if value is not None else None
 
     def _project_build_pattern_control(self) -> PatternPositionControl:
+        if getattr(self, "_project_revision_pending", False):
+            raise ValueError("Accept the loaded CAD revision before evaluating saved definitions.")
         if self._current_drf is None or any(entry is None for entry in getattr(self, "_datum_slot", {}).values()):
             raise ValueError("Build a complete datum reference frame before evaluation.")
+        for slot, entry in getattr(self, "_datum_slot", {}).items():
+            info = self._entity_by_feature_id.get(entry.get("feature_id"))
+            if info is None:
+                raise ValueError(f"Reattach valid geometry for datum {slot} before evaluation.")
+            point, direction, _description = self._gdt_extract_datum_geometry(info)
+            if point is None or direction is None:
+                raise ValueError(f"Reattach valid geometry for datum {slot} before evaluation.")
         if self.project.units.length != "mm" or self.project.units.angle != "deg":
             raise ValueError("CAD/GD&T analysis currently requires mm and deg. Automatic conversion is not implemented.")
         for system in self.project.datum_systems.values():

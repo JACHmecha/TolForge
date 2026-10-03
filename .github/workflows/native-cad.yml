@@ -1,0 +1,60 @@
+name: Qualify optional native CAD
+
+# Explicit qualification of the source CAD profile; independent of pip-only PR checks.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify-native-cad:
+    name: Required STEP backend and analytic geometry
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: tolforge-cad-ci
+          environment-file: .github/environments/native-cad.yml
+          channels: conda-forge
+          channel-priority: strict
+          auto-activate-base: false
+      - name: Install declared desktop baseline and CAD wrapper
+        run: conda run -n tolforge-cad-ci --no-capture-output python -m pip install -r requirements.txt compas_occ==1.5.0 .
+      - name: Verify the qualification interpreter
+        run: conda run -n tolforge-cad-ci --no-capture-output python -c "import os, sys; from pathlib import Path; assert sys.version_info[:2] == (3, 12), sys.version; assert Path(sys.prefix).resolve() == Path(os.environ['CONDA_PREFIX']).resolve(); print(sys.executable)"
+      - name: Check dependency consistency
+        run: conda run -n tolforge-cad-ci --no-capture-output python -m pip check
+      - name: Record resolved environment and source revision
+        run: |
+          New-Item -ItemType Directory -Path ci-evidence -Force | Out-Null
+          conda list -n tolforge-cad-ci --explicit | Set-Content ci-evidence/conda-explicit-win-64.txt
+          if ($LASTEXITCODE -ne 0) { throw "Cannot record the native environment." }
+          conda run -n tolforge-cad-ci --no-capture-output python -m pip freeze | Set-Content ci-evidence/pip-freeze.txt
+          if ($LASTEXITCODE -ne 0) { throw "Cannot record Python dependencies." }
+          git rev-parse HEAD | Set-Content ci-evidence/source-revision.txt
+          if ($LASTEXITCODE -ne 0) { throw "Cannot record source revision." }
+      - name: Require a working CAD backend and run native cases
+        run: conda run -n tolforge-cad-ci --no-capture-output python -m pytest tests -q -m native_cad --require-native-cad --strict-markers --junitxml=ci-evidence/native-tests.xml
+      - name: Qualify source STEP round-trip and analytic recognition
+        run: conda run -n tolforge-cad-ci --no-capture-output python Code/gui/app.py --self-check-json ci-evidence/native-smoke.json --self-check-cad
+      - name: Describe qualification scope
+        if: always()
+        run: |
+          "Explicit Windows source CAD qualification: backend imports, generated STEP cylinder round-trips and cylinder/cone recognition. Missing/broken backend and skipped native cases fail. A native viewport, frozen CAD executable and clean-machine distribution are separate qualification work." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-cad-windows
+          path: ci-evidence/
+          if-no-files-found: warn

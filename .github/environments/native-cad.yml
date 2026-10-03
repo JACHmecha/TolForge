@@ -1,0 +1,11 @@
+# Versioned source-CAD CI recipe; Windows only. The job records an explicit
+# conda manifest and pip freeze so each successful run can be reproduced.
+# Keep OCCT binaries in conda and the Qt desktop baseline in requirements.txt.
+name: tolforge-cad-ci
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - pythonocc-core=7.9.3
+  - pip

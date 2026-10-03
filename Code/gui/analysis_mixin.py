@@ -10,6 +10,7 @@ from tolstack.analysis import (
     parse_seed, update_report_limits,
 )
 from gui.theme import COLORS, style_axes
+from tolstack.reporting import project_report_context
 
 
 class AnalysisMixin:
@@ -165,6 +166,33 @@ class AnalysisMixin:
     # Analysis
     # ------------------------------------------------------------------
 
+    def _analysis_report_context(self):
+        project = getattr(self, "project", None)
+        if project is None:
+            return None
+        metadata = {}
+        for key, name in (
+            ("requirement", "study_objective_input"), ("assumptions", "study_assumptions_input"),
+            ("drawing", "inspection_drawing_input"), ("measurement_source", "inspection_source_input"),
+            ("datum_alignment", "inspection_datum_input"),
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                metadata[key] = widget.text()
+        controls_reader = getattr(self, "_drawing_control_rows", None)
+        if controls_reader is not None:
+            metadata["drawing_controls"] = controls_reader()
+        measurements_reader = getattr(self, "_inspection_row_metadata", None)
+        if measurements_reader is not None:
+            metadata["measurement_row_metadata"] = measurements_reader()
+        cad_reader = getattr(self, "_project_report_sources", None)
+        context = project_report_context(
+            project, study_metadata=metadata, sources=getattr(self, "_inspection_source_files", ()),
+            cad_sources=cad_reader() if cad_reader is not None else None,
+        )
+        context["units"] = {"length": project.units.length, "angle": project.units.angle}
+        return context
+
     def run_analysis(self):
         self._last_analysis_report = None
         self._last_samples = None
@@ -180,7 +208,7 @@ class AnalysisMixin:
                 seed=parse_seed(seed_widget.text()) if seed_widget is not None else None,
                 response_name=response_widget.text() if response_widget is not None else "Functional response",
             )
-            report = analyze_stack(stack, settings)
+            report = analyze_stack(stack, settings, report_context=self._analysis_report_context())
         except ValueError as e:
             self.canvas.setVisible(False)
             self.result_label.setText("Analysis needs valid inputs. Correct the reported issue and run again.")

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QPushButton, QLabel, QComboBox,
     QHeaderView, QLineEdit,
     QCheckBox, QDoubleSpinBox, QSpinBox,
-    QTabWidget, QFrame, QSizePolicy, QScrollArea, QButtonGroup, QSplitter
+    QTabWidget, QFrame, QSizePolicy, QScrollArea, QButtonGroup, QSplitter, QProgressBar
 )
 from PySide6.QtCore import Qt
 
@@ -128,6 +128,12 @@ class TolstackWindow(
         inspector_hint.setWordWrap(True)
         inspector_hint.setProperty("role", "muted")
         inspector_layout.addWidget(inspector_hint)
+        relink_button = QPushButton("Review saved feature links")
+        relink_button.clicked.connect(lambda: self.show_feature_relinking())
+        inspector_layout.addWidget(relink_button)
+        locate_source_button = QPushButton("Locate saved CAD source")
+        locate_source_button.clicked.connect(lambda: self.locate_project_source())
+        inspector_layout.addWidget(locate_source_button)
         inspector_layout.addStretch(1)
         sidebar.addTab(inspector_tab, "Inspect")
         self.inspector_tab = inspector_tab
@@ -885,6 +891,10 @@ class TolstackWindow(
         load_step_btn = QPushButton("Load STEP")
         load_step_btn.clicked.connect(self.load_step_file)
         toolbar_layout.addWidget(load_step_btn)
+        self.step_cancel_button = QPushButton("Cancel load")
+        self.step_cancel_button.setEnabled(False)
+        self.step_cancel_button.clicked.connect(lambda: self.cancel_step_load())
+        toolbar_layout.addWidget(self.step_cancel_button)
         clear_step_btn = QPushButton("Clear")
         clear_step_btn.clicked.connect(self.clear_step_preview)
         toolbar_layout.addWidget(clear_step_btn)
@@ -918,6 +928,11 @@ class TolstackWindow(
         self.step_status_label.setWordWrap(False)
         self.step_status_label.setProperty("role", "status")
         status_strip_layout.addWidget(self.step_status_label, stretch=1)
+        self.step_load_progress = QProgressBar()
+        self.step_load_progress.setFixedWidth(145)
+        self.step_load_progress.setRange(0, 100)
+        self.step_load_progress.setVisible(False)
+        status_strip_layout.addWidget(self.step_load_progress)
         viewport_column.addWidget(status_strip)
 
         self.workspace_splitter = QSplitter(Qt.Horizontal)
@@ -974,6 +989,16 @@ class TolstackWindow(
         self.gdt_iterations_input.valueChanged.connect(self._invalidate_gdt_results)
         self._show_workspace("inspect")
         apply_window_theme(self)
+        self._project_lifecycle_install()
+
+    def _reset_surface_previews(self):
+        if (getattr(self, "_project_preserve_raw_geometry", False)
+                and getattr(self, "_project_pending_raw_geometry", None) is None):
+            self._project_capture_raw_geometry_before_load()
+        clear_sources = getattr(self, "_project_clear_loaded_source_evidence", None)
+        if clear_sources is not None:
+            clear_sources()
+        StepViewerMixin._reset_surface_previews(self)
 
     def _show_workspace(self, name: str):
         page = self.workspace_pages.get(name)
@@ -1023,13 +1048,11 @@ class TolstackWindow(
         )
 
     def closeEvent(self, event):
+        if not self._project_prepare_close(event):
+            return
         self._measure_offset_timer.stop()
         self._stack_preview_timer.stop()
-        # Without this, closing the window while a large-assembly STEP
-        # load is still running on its background QThread prints Qt's
-        # "QThread: Destroyed while thread is still running" warning (and
-        # can occasionally hang on exit) - give it a moment to wind down
-        # cleanly first.
+        # The lifecycle guard defers close while the loader retains owners.
         self._cancel_step_load_for_shutdown()
         super().closeEvent(event)
 
@@ -1065,6 +1088,8 @@ def main():
     apply_application_palette(app)
     window = TolstackWindow()
     window.show()
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, window._project_offer_startup_recovery)
     sys.exit(app.exec())
 
 

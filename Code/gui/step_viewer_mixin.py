@@ -15,7 +15,7 @@ import math
 import numpy as np
 
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import Qt, QThread, QTimer
 
 from compas.colors import Color
 
@@ -79,7 +79,10 @@ class StepViewerMixin:
     def clear_step_preview(self):
         """Clear the loaded geometry but keep the 3D viewport itself visible
         and ready - it's initialized once at startup, not recreated here."""
+        self._request_step_load_cancel()
         self._step_load_generation += 1  # invalidate any in-flight background load
+        self._step_pending_load_path = None
+        self._step_pending_start_path = None
         self._reset_surface_previews()
         self.step_status_label.setText("No STEP file loaded yet.")
         if self._step_preview_renderer is not None:
@@ -252,18 +255,29 @@ class StepViewerMixin:
             )
             return
 
+        if getattr(self, "_project_closing", False):
+            return False
         if self._step_load_thread is not None:
+            if getattr(self, "_step_load_cancel_requested", False):
+                self._step_pending_load_path = path
+                self.step_status_label.setText("Waiting for the canceled STEP read to finish before loading the selected file.")
+                return False
             self.step_status_label.setText(
-                "A STEP file is already loading - please wait for it to finish."
+                "A STEP file is already loading. Cancel it or wait for it to finish."
             )
-            return
+            return False
 
         self._step_load_generation += 1
         generation = self._step_load_generation
         deflection = self.step_deflection_input.value()
 
         self.step_status_label.setText(f"Loading {Path(path).name} ...")
-        QApplication.processEvents()
+        self._step_load_cancel_requested = False
+        self._step_load_cancel_status_generation = None
+        self._step_load_terminal_received = False
+        self._step_load_thread_finished = False
+        self._step_pending_load_path = None
+        self._set_step_load_busy(True)
 
         thread = QThread(self)
         worker = StepLoadWorker(path, deflection)
@@ -286,19 +300,99 @@ class StepViewerMixin:
         # produced "Cannot make QOpenGLContext current in a different
         # thread". Passing QueuedConnection explicitly here removes any
         # dependency on that auto-detection working correctly.
-        worker.finished.connect(self._on_step_load_finished, Qt.ConnectionType.QueuedConnection)
-        worker.failed.connect(self._on_step_load_failed, Qt.ConnectionType.QueuedConnection)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(self._cleanup_step_load_thread)
+        worker.terminal.connect(self._on_step_load_terminal, Qt.ConnectionType.QueuedConnection)
+        worker.stage_changed.connect(self._on_step_load_stage, Qt.ConnectionType.QueuedConnection)
+        worker.progress_changed.connect(self._on_step_load_progress, Qt.ConnectionType.QueuedConnection)
+        # quit() is thread-safe; terminal payloads need no live QObject sender.
+        worker.terminal.connect(thread.quit, Qt.ConnectionType.DirectConnection)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._cleanup_step_load_thread, Qt.ConnectionType.QueuedConnection)
 
         self._step_load_thread = thread
         self._step_load_worker = worker
         thread.start()
+        return True
+
+    def _set_step_load_busy(self, busy):
+        button = getattr(self, "step_cancel_button", None)
+        if button is not None:
+            button.setEnabled(busy and not getattr(self, "_step_load_cancel_requested", False)
+                              and not getattr(self, "_step_load_applying_result", False))
+        progress = getattr(self, "step_load_progress", None)
+        if progress is not None:
+            progress.setVisible(busy)
+            if busy:
+                progress.setRange(0, 0)
+
+    def _on_step_load_stage(self, generation, description):
+        if generation != self._step_load_generation or getattr(self, "_step_load_cancel_requested", False):
+            return
+        self.step_status_label.setText(description)
+
+    def _on_step_load_progress(self, generation, completed, total):
+        if generation != self._step_load_generation or getattr(self, "_step_load_cancel_requested", False):
+            return
+        progress = getattr(self, "step_load_progress", None)
+        if progress is not None:
+            progress.setRange(0, total)
+            progress.setValue(completed)
+
+    def _request_step_load_cancel(self):
+        thread, worker = self._step_load_thread, self._step_load_worker
+        if thread is None:
+            return False
+        self._step_load_cancel_requested = True
+        if worker is not None:
+            # A queued worker slot would wait behind the native call. This
+            # method only sets an Event and is safe to call across threads.
+            try:
+                worker.request_cancel()
+            except RuntimeError:
+                pass  # native thread exited; queued cleanup still owns it
+        if thread.isRunning():
+            thread.requestInterruption()
+        self._set_step_load_busy(True)
+        return True
+
+    def cancel_step_load(self):
+        if not self._request_step_load_cancel():
+            return False
+        self._step_load_generation += 1
+        self._step_load_cancel_status_generation = self._step_load_generation
+        self._step_pending_load_path = None
+        self.step_status_label.setText(
+            "Cancellation requested. Waiting for the current native operation to return; the displayed model is retained."
+        )
+        return True
+
+    def _on_step_load_terminal(self, outcome):
+        worker = self._step_load_worker
+        if worker is None or outcome.generation != worker.generation:
+            return
+        current = outcome.generation == self._step_load_generation and not getattr(self, "_project_closing", False)
+        if current and not getattr(self, "_step_load_cancel_requested", False):
+            if outcome.kind == "finished":
+                self._step_load_applying_result = True
+                self._set_step_load_busy(True)
+                try:
+                    self._on_step_load_finished(outcome.result)
+                finally:
+                    self._step_load_applying_result = False
+            elif outcome.kind == "failed":
+                self._on_step_load_failed(outcome.message)
+            else:
+                self.step_status_label.setText("STEP loading canceled. The displayed model is retained.")
+        elif (getattr(self, "_step_load_cancel_requested", False) and not getattr(self, "_project_closing", False)
+              and getattr(self, "_step_load_cancel_status_generation", None) == self._step_load_generation):
+            if not getattr(self, "_step_pending_load_path", None):
+                self.step_status_label.setText("STEP loading canceled. The displayed model is retained.")
+        self._step_load_terminal_received = True
+        self._release_step_load_if_complete()
 
     def _on_step_load_failed(self, message: str):
         worker = self._step_load_worker
-        if worker is None or worker.generation != self._step_load_generation:
+        if (worker is None or worker.generation != self._step_load_generation
+                or getattr(self, "_step_load_cancel_requested", False) or getattr(self, "_project_closing", False)):
             return  # superseded by a newer load or a clear_step_preview()
         self.step_status_label.setText(f"Failed to read/tessellate the STEP file: {message}")
 
@@ -307,9 +401,13 @@ class StepViewerMixin:
         QueuedConnection - safe to touch the GL context here.
         """
         worker = self._step_load_worker
-        if worker is None or worker.generation != self._step_load_generation:
+        if (worker is None or worker.generation != self._step_load_generation
+                or getattr(self, "_step_load_cancel_requested", False) or getattr(self, "_project_closing", False)):
             return  # superseded by a newer load or a clear_step_preview() in the meantime
         path = worker.path
+        generation = worker.generation
+        dirty_check = getattr(self, "_project_is_dirty", None)
+        self._project_step_precommit_was_dirty = bool(dirty_check()) if dirty_check is not None else False
 
         try:
             viewport = CompasViewportAdapter(self._step_preview_renderer)
@@ -320,6 +418,17 @@ class StepViewerMixin:
             # widget. Without explicitly clearing it, geometry from a
             # previously-loaded STEP file would keep accumulating invisibly
             # underneath whatever the current widget shows.
+            pattern_table = getattr(self, "pattern_table", None)
+            has_raw_pattern = pattern_table is not None and pattern_table.rowCount() > 0
+            clean_auto_open = (getattr(self, "_project_loading_clean_from_disk", False)
+                               and not self._project_step_precommit_was_dirty)
+            if (not clean_auto_open and
+                    (getattr(self, "_entity_by_feature_id", {}) or has_raw_pattern or
+                     any(entry is not None for entry in getattr(self, "_datum_slot", {}).values()))):
+                self._project_preserve_raw_geometry = True
+                capture = getattr(self, "_project_capture_raw_geometry_before_load", None)
+                if capture is not None and getattr(self, "_project_pending_raw_geometry", None) is None:
+                    capture()
             self._reset_surface_previews()
             viewport.clear()
 
@@ -341,6 +450,8 @@ class StepViewerMixin:
             ]
 
             for i, face_mesh in enumerate(result.face_meshes):
+                if generation != self._step_load_generation:
+                    return
                 solid_index = result.face_solid_indices[i] if i < len(result.face_solid_indices) else 0
                 face_color = solid_palette[solid_index % len(solid_palette)]
                 try:
@@ -361,6 +472,8 @@ class StepViewerMixin:
                     }
 
             for i, polyline in enumerate(result.edge_polylines):
+                if generation != self._step_load_generation:
+                    return
                 try:
                     obj = viewport.add(polyline, linecolor=edge_color, linewidth=1.5)
                 except TypeError:
@@ -370,6 +483,8 @@ class StepViewerMixin:
                     self._step_entity_info[id(obj)] = {"type": "edge", "index": i, "points": points}
 
             for i, point in enumerate(result.vertex_points):
+                if generation != self._step_load_generation:
+                    return
                 try:
                     obj = viewport.add(point, pointcolor=vertex_color, pointsize=8)
                 except TypeError:
@@ -390,44 +505,87 @@ class StepViewerMixin:
             # is the method that checks for any object with obj._inited
             # still False and initializes it, then rebuilds the buffer data.
             viewport.refresh(rebuild=True)
+            if generation != self._step_load_generation:
+                return
 
             # Force a real paint pass now that the geometry is in the scene.
             self._step_preview_renderer.update()
-            QApplication.processEvents()
-
             self._zoom_to_fit(self._step_preview_renderer)
             self._step_preview_renderer.update()
-            QApplication.processEvents()
+            if generation != self._step_load_generation:
+                return
 
             if hasattr(self, "_project_on_step_loaded"):
-                self._project_on_step_loaded(path)
+                self._project_on_step_loaded(path, source_sha256=result.source_sha256,
+                                             source_hash_status=result.source_hash_status)
 
             lod_note = "" if worker.deflection_applied else " (quality setting not supported by this compas_occ version - used its default)"
             solid_count = len(set(result.face_solid_indices)) if result.face_solid_indices else 0
+            relink_status = getattr(self, "_project_relink_status_text", None)
+            source_note = f"\n{relink_status()}" if relink_status is not None else ""
             self.step_status_label.setText(
                 f"Loaded: {Path(path).name}\n"
                 f"Solids: {solid_count}  Faces: {len(result.face_meshes)}  "
                 f"Edges: {len(result.edge_polylines)}  Vertices: {len(result.vertex_points)}\n"
-                f"Left-click a face/edge/vertex to select it.{lod_note}"
+                f"Left-click a face/edge/vertex to select it.{lod_note}{source_note}"
             )
         except Exception as exc:  # pragma: no cover - runtime environment specific
             self.step_status_label.setText(f"Could not display the STEP geometry: {exc}")
+        finally:
+            self._project_step_precommit_was_dirty = None
 
     def _cleanup_step_load_thread(self):
-        if self._step_load_thread is not None:
-            self._step_load_thread.deleteLater()
-        if self._step_load_worker is not None:
-            self._step_load_worker.deleteLater()
+        thread = self._step_load_thread
+        sender = self.sender()
+        if thread is None or (sender is not None and sender is not thread) or thread.isRunning():
+            return
+        self._step_load_thread_finished = True
+        self._release_step_load_if_complete()
+
+    def _release_step_load_if_complete(self):
+        if not getattr(self, "_step_load_thread_finished", False):
+            return
+        worker = self._step_load_worker
+        if worker is not None and not getattr(self, "_step_load_terminal_received", False):
+            return
+        thread = self._step_load_thread
+        if thread is not None:
+            # finished/isRunning do not guarantee native thread teardown (for
+            # example thread-local destructors) has returned. Never delete or
+            # replace the owner until a zero-time join confirms completion.
+            if thread.isRunning() or not thread.wait(0):
+                QTimer.singleShot(5, self._release_step_load_if_complete)
+                return
+            thread.deleteLater()
         self._step_load_thread = None
         self._step_load_worker = None
+        self._set_step_load_busy(False)
+        if getattr(self, "_project_close_waiting", False):
+            self._project_finish_deferred_close()
+        pending = getattr(self, "_step_pending_load_path", None)
+        self._step_pending_load_path = None
+        if pending and not getattr(self, "_project_closing", False):
+            self._step_pending_start_path = pending
+            self._step_pending_start_generation = self._step_load_generation
+            QTimer.singleShot(0, self._start_pending_step_load)
+
+    def _start_pending_step_load(self):
+        path = getattr(self, "_step_pending_start_path", None)
+        self._step_pending_start_path = None
+        if path and getattr(self, "_step_pending_start_generation", None) == self._step_load_generation:
+            self._start_step_load(path)
 
     def _cancel_step_load_for_shutdown(self):
-        """Called from the main window's closeEvent so the app doesn't
-        hang or print QThread warnings if a load is still running when
-        the window is closed."""
-        if self._step_load_thread is not None:
-            self._step_load_thread.quit()
-            self._step_load_thread.wait(3000)
+        """False means a native call still owns the thread: the host must defer close."""
+        self._step_pending_load_path = None
+        self._step_pending_start_path = None
+        thread = self._step_load_thread
+        if thread is not None:
+            self._request_step_load_cancel()
+            self._step_load_generation += 1
+            self.step_status_label.setText("Closing after the current native STEP operation returns.")
+            return False
+        return True
 
     def set_pick_filter(self, display_text: str):
         """Connected to the toolbar's selection-filter combo. Maps its

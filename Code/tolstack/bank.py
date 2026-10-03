@@ -13,7 +13,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 from .models import Dimension
-from .json_data import dumps_strict, loads_strict, require_finite_number, require_text
+from .json_data import loads_strict, require_finite_number, require_text
+from .persistence import backup_path, save_json
 
 
 @dataclass
@@ -110,13 +111,21 @@ class DimensionBank:
         """Saves the bank to a JSON file."""
         self.validate()
         data = {name: asdict(t) for name, t in self.entries.items()}
-        payload = dumps_strict(data)
-        Path(path).write_text(payload, encoding="utf-8")
+        save_json(path, data, previous_validator=type(self).from_dict)
 
     @classmethod
     def load(cls, path: str) -> "DimensionBank":
         """Loads a bank from a JSON file."""
         data = loads_strict(Path(path).read_text(encoding="utf-8"))
+        return cls.from_dict(data)
+
+    @classmethod
+    def load_previous(cls, path: str) -> "DimensionBank":
+        """Load the previous valid saved bank without changing disk."""
+        return cls.load(backup_path(path))
+
+    @classmethod
+    def from_dict(cls, data) -> "DimensionBank":
         if not isinstance(data, dict):
             raise ValueError("Dimension bank file must be an object.")
         entries = {}

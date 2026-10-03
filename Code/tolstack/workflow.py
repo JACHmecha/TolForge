@@ -36,6 +36,9 @@ def validate_study(study):
         raise ValueError("Unsupported study analysis method.")
     if "units_confirmed" in study and not isinstance(study["units_confirmed"], bool):
         raise ValueError("Units confirmation must be true or false.")
+    if "drawing_controls" in study:
+        from .characteristics import validate_drawing_controls
+        validate_drawing_controls(study["drawing_controls"])
     inspection = study.get("inspection", {})
     if not isinstance(inspection, dict):
         raise ValueError("Inspection settings must be an object.")
@@ -54,6 +57,25 @@ def validate_study(study):
     for row in rows:
         if any(not isinstance(row.get(key, ""), str) for key in INSPECTION_FIELDS):
             raise ValueError("Draft inspection cells must be text.")
+    from .inspection_import import validate_row_metadata, validate_import_descriptor
+    if "row_metadata" in inspection:
+        validate_row_metadata(inspection["row_metadata"], rows)
+    source_files = inspection.get("source_files", [])
+    if not isinstance(source_files, list):
+        raise ValueError("Inspection source files must be a list of objects.")
+    for source in source_files:
+        if not isinstance(source, dict):
+            raise ValueError("Inspection source files must be objects.")
+        for key in ("kind", "path"):
+            if not isinstance(source.get(key), str) or not source[key].strip():
+                raise ValueError(f"Inspection source file {key} must be nonempty text.")
+        for key in ("import_sha256", "sha256"):
+            if key in source and (
+                not isinstance(source[key], str) or len(source[key]) != 64
+                or any(character not in "0123456789abcdefABCDEF" for character in source[key])
+            ):
+                raise ValueError(f"Inspection source file {key} must be a 64-character SHA-256 digest.")
+        validate_import_descriptor(source)
 
 
 def require_supported_distribution(distribution, name):
