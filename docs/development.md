@@ -56,13 +56,13 @@ to logical repository `tolforge`. The dated backlog remains historical evidence;
 subsequent implementation updates distinguish committed work from local edits
 and leave unselected recommendations proposed.
 
-Builds retain `dist/source-provenance.json` with the source commit, branch,
-working-tree state, and CAD profile alongside `packaged-smoke.json`,
-`pip-freeze.txt`, and `SHA256.txt`. A dirty working tree is recorded explicitly;
-its commit alone does not identify the uncommitted contents. Build release
-artifacts from a clean reviewed revision and keep all evidence with that exact
-executable. The executable hash identifies the artifact. Source smoke reports
-and an old `dist` executable are not interchangeable release evidence.
+Builds retain a separate `dist/scalar` or `dist/cad` package. Its
+`build-provenance.json` records the source commit, branch, dirty state, per-file
+hashes and aggregate source hash. `tolforge-build.json` is embedded in the
+executable and retained beside it. `SHA256.json` identifies the executable and
+all evidence files. Build from a clean reviewed revision for distribution;
+dirty builds explicitly identify their actual source contents. Keep evidence
+with its exact executable. An old top-level `dist/TolForge.exe` is historical.
 
 `app.py` calls `gui.runtime.configure_native_runtime()` before CAD imports.
 Configure compatible libraries locally; workstation paths are not embedded in
@@ -75,8 +75,9 @@ On Windows, choose one of these configuration sources, in priority order:
 1. `TOLFORGE_DLL_DIRS`, a semicolon-separated list of absolute DLL directories.
 2. `%LOCALAPPDATA%\TolForge\runtime.json`.
 3. `.tolforge/runtime.json` in the source checkout, when the per-user file is
-   absent. This private directory is ignored by Git. Frozen executables do not
-   use the checkout fallback.
+   absent. This private directory is ignored by Git. Frozen executables use
+   bundled libraries only and ignore all source configuration mechanisms,
+   including environment, per-user and active Conda DLL directories.
 
 Either JSON file uses this structure; replace the example paths with the
 compatible native libraries installed on your machine:
@@ -253,43 +254,79 @@ can fail viewer initialization; follow `main()` when testing the real renderer.
 
 ## Packaging
 
-Use the build script for dependency installation, tests, the configured
-PyInstaller spec, and a frozen executable smoke check:
+Release builds use Windows x64 Python **3.12.15** and the complete SHA256-pinned
+desktop/build/test dependency closure in
+`.github/environments/windows-release-py312.lock`. Source development retains
+the Python 3.10+ support boundary. Select the prepared interpreter explicitly:
 
 ```powershell
-.\build_installer.ps1
+conda create -n tolforge-scalar --file .github/environments/scalar-win-64.conda.lock
+conda activate tolforge-scalar
+.\build_installer.ps1 -Python "$env:CONDA_PREFIX\python.exe"
 ```
 
-The default profile builds the GUI/scalar application and excludes the optional
-`compas_occ`/`OCC` backend. For a STEP-capable artifact, first prepare a mutually
-compatible native CAD environment, then select its explicit profile:
+The default scalar profile excludes `compas_occ` and `OCC`. Prepare the CAD
+profile from the platform-specific explicit archive lock, which pins Python,
+OCC/OCCT **7.9.3**, its `novtk` variant and the complete native dependency set.
+The YAML recipe describes how to regenerate that lock; builds consume the lock.
 
 ```powershell
-.\build_installer.ps1 -IncludeCad
+conda create -n tolforge-cad --file .github/environments/native-cad-win-64.conda.lock
+conda activate tolforge-cad
+.\build_installer.ps1 -Python "$env:CONDA_PREFIX\python.exe" -IncludeCad
 ```
 
-`-SkipDependencyInstall` reuses an already prepared environment. `-IncludeCad`
-sets `TOLFORGE_BUILD_CAD=1` for the spec to collect the installed CAD packages;
-it does not install or qualify a CAD environment. A direct spec build uses the
-same environment switch. The spec bundles COMPAS viewer resources and GD&T SVG
-assets in both profiles.
+The script installs hash-locked Python archives, verifies all pinned versions,
+runs the relevant strict test suite, collects the OCC PE import closure from
+that exact prefix and records native DLL/extension hashes. The CAD wrapper is
+the official `compas_occ` 1.5.0 source revision recorded in
+`windows-cad-py312.lock`, rather than an unavailable PyPI requirement.
+`-SkipDependencyInstall` still validates the complete environment and origin.
+The spec requires prepared metadata, excludes workstation OCC configuration,
+includes distribution metadata and disables UPX. Both profiles include the
+COMPAS resources and 24 GD&T SVGs. Source changes during a build fail the gate.
+Windows ICU is selected explicitly before Qt imports. Conda's versioned ICU
+exports are incompatible with Qt's Windows ICU interface despite sharing DLL
+names. Source startup, build subprocesses and frozen startup use Windows ICU;
+installed native packages are preserved. Diagnostics record the selected paths.
 
-Output includes `dist/TolForge.exe`, `source-provenance.json`,
-`packaged-smoke.json`, `pip-freeze.txt`, and `SHA256.txt`. The script runs tests
-before building, then invokes the frozen
-executable with `--self-check-json <path>` to check numerical/GUI imports, a
-known scalar clearance, and bundled SVGs. The CAD profile additionally passes
-`--self-check-cad` to check a generated cylinder's STEP round trip and analytic
-recognition. Keep this evidence with the built executable. A build/smoke pass
-does not qualify native OpenGL behavior or a clean target machine; exercise the
-native verification checklist and target installation separately.
+Outputs include `TolForge.exe`, both provenance records, `packaged-smoke.json`,
+`pip-freeze.txt`, the dependency locks, `tests.xml` and `SHA256.json`. CAD also
+includes `native-dependencies.json`, the native explicit lock and reproducible
+STEP fixtures. Each build uses fresh staging and preserves an earlier completed
+profile before replacement. A failed build cannot publish partial new files.
+Frozen checks require the exact profile and reject missing or substituted CAD
+libraries, externally imported modules and borrowed native DLLs. A successful
+build establishes a local frozen check, with its scope recorded in the report.
+The injected Windows Defender `MpOAV.dll` is accepted only from the OS-resolved
+Defender directory after offline Windows signature and Microsoft publisher
+verification. Its path, hash and signer are recorded separately.
 
-GitHub Actions uses the shared Windows headless checks for Python 3.10 and 3.12,
-followed by the default pip-only build on Python 3.12. The workflow preserves the
-executable and evidence and uploads them on a published release. The separate
-source-CAD workflow does not build a CAD executable. These are configured checks,
-not a claim that a new release, native viewport, or clean-machine artifact has
-been qualified.
+The target verifier needs only Windows and PowerShell. It checks all package
+hashes and native manifest bindings to embedded build metadata, records its own
+script hash, copies only the executable to a detached directory, clears Python,
+Conda, Qt and CAD overrides and uses fresh user configuration and a minimal
+Windows PATH. CAD requires real native rendering, GPU picking and camera
+controls, preserving a screenshot, driver versions, loaded DLL hashes and STEP
+fixtures. An unavailable native context fails; offscreen Qt is rejected.
+The CAD viewport requires a desktop OpenGL 3.3 driver. Qt's bundled older
+software OpenGL library is not a qualified substitute for COMPAS/PyOpenGL.
+
+```powershell
+.\scripts\verify_windows_package.ps1 -PackageDirectory dist\scalar -Profile scalar -OutputDirectory .tolforge\scalar-target-check
+.\scripts\verify_windows_package.ps1 -PackageDirectory dist\cad -Profile cad -OutputDirectory .tolforge\cad-target-check
+# Source native viewport check, using its configured source CAD environment:
+.\launch.ps1 -SelfCheckJson .tolforge\source-viewport.json -IncludeCad -QualifyViewport
+```
+
+Choose a new output directory for each target run. Local isolated execution
+records `isolated-workstation`, without claiming a fresh machine.
+`build-release.yml` builds both profiles, then downloads their artifacts to
+different fresh Windows VMs without checking out source or installing Python
+or CAD. Both target checks must pass before release upload. The separate
+`native-cad.yml` workflow uses the same locks for required source geometry tests.
+Configured workflows are not evidence of a completed hosted run. See
+[I08 evidence and limits](implementation-i08-2026-10-08.md) for the actual runs.
 
 ## Troubleshooting
 

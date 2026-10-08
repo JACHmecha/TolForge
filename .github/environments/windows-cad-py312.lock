@@ -1,0 +1,4 @@
+# Install after windows-release-py312.lock in the locked native conda prefix.
+# compas_occ is not published on PyPI. Pin its official source commit and archive.
+# --no-deps --no-build-isolation uses the already pinned desktop build tools.
+compas_occ @ https://github.com/compas-dev/compas_occ/archive/8dc35a32e447bb053b236f0836c2a92d8900f784.zip --hash=sha256:7ebcaedae2c27b284015521cb25efe8673807bef7257e5883559027631721656

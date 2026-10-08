@@ -6,6 +6,6 @@ channels:
   - conda-forge
   - nodefaults
 dependencies:
-  - python=3.12
-  - pythonocc-core=7.9.3
+  - python=3.12.15
+  - pythonocc-core=7.9.3=novtk*
   - pip

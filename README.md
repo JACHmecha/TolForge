@@ -10,6 +10,9 @@ STEP loads support cancellation and deferred close, saved CAD features have a
 guided relinking/revision review, and generic aligned CSV imports support a
 mapping preview with measurement provenance. See
 [I09/I11/F02 implementation evidence](docs/implementation-i09-i11-f02.md).
+Windows scalar and CAD builds now have separate hash-locked environments,
+executable provenance and detached native qualification checks. See
+[I08 build and qualification evidence](docs/implementation-i08-2026-10-08.md).
 
 TolForge is a desktop application and Python library for mechanical tolerance
 stack analysis, STEP inspection, and a limited set of GD&T position checks.

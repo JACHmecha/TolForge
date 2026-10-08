@@ -1,4 +1,4 @@
-name: Build release executable
+name: Build and qualify Windows packages
 
 permissions:
   contents: read
@@ -14,41 +14,127 @@ jobs:
 
   build-windows:
     needs: test-windows
-    runs-on: windows-latest
-    permissions:
-      contents: write
-
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [scalar, cad]
+    defaults:
+      run:
+        shell: pwsh
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: conda-incubator/setup-miniconda@v3
         with:
-          python-version: '3.12'
-
-      - name: Build and verify packaged executable
-        shell: pwsh
-        run: ./build_installer.ps1
-
-      - name: Preserve executable and verification evidence
+          activate-environment: tolforge-${{ matrix.profile }}-ci
+          environment-file: .github/environments/${{ matrix.profile == 'cad' && 'native-cad-win-64.conda.lock' || 'scalar-win-64.conda.lock' }}
+          auto-activate-base: false
+          auto-update-conda: false
+      - name: Build hash-locked profile and verify frozen executable
+        run: |
+          if ('${{ matrix.profile }}' -eq 'cad') {
+            ./build_installer.ps1 -Python "$env:CONDA_PREFIX/python.exe" -IncludeCad
+          } else {
+            ./build_installer.ps1 -Python "$env:CONDA_PREFIX/python.exe"
+          }
+      - name: Preserve package and exact build evidence
         uses: actions/upload-artifact@v4
         with:
-          name: TolForge-windows
-          path: |
-            dist/TolForge.exe
-            dist/packaged-smoke.json
-            dist/pip-freeze.txt
-            dist/SHA256.txt
-            dist/source-provenance.json
+          name: TolForge-${{ matrix.profile }}-windows
+          path: dist/${{ matrix.profile }}/
+          if-no-files-found: error
+      - name: Preserve verifier separately for detached target
+        if: matrix.profile == 'scalar'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-verifier
+          path: scripts/verify_windows_package.ps1
           if-no-files-found: error
 
-      - name: Upload verified executable to release
-        if: github.event_name == 'release'
+  verify-clean-windows:
+    # A different fresh VM receives executable/evidence only. No source checkout,
+    # interpreter setup, native CAD install, or shared builder environment.
+    needs: build-windows
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [scalar, cad]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TolForge-${{ matrix.profile }}-windows
+          path: package
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-package-verifier
+          path: verifier
+      - name: Install portable executable and require profile/native viewport checks
+        shell: pwsh
+        run: ./verifier/verify_windows_package.ps1 -PackageDirectory package -Profile '${{ matrix.profile }}' -OutputDirectory target-evidence
+      - name: Preserve target installation and viewport evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TolForge-${{ matrix.profile }}-target-qualification
+          path: |
+            target-evidence/*.json
+            target-evidence/*.png
+            target-evidence/*.cad-fixtures/
+          if-no-files-found: error
+      - name: Record qualification scope
+        if: always()
+        shell: pwsh
+        run: |
+          "Profile ${{ matrix.profile }}: separate Windows VM, detached executable, minimal Windows PATH and fresh user configuration. CAD requires generated STEP analytic recognition and real Qt/OpenGL geometry/selection/framebuffer checks. Unavailable graphics or missing dependencies fail qualification." >> $env:GITHUB_STEP_SUMMARY
+
+  publish-qualified-packages:
+    if: github.event_name == 'release'
+    needs: verify-clean-windows
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: TolForge-*-windows
+          path: packages
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: TolForge-*-target-qualification
+          path: qualification
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-package-verifier
+          path: verifier
+      - name: Upload both profiles and their target evidence after qualification
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$env:RELEASE_TAG" dist/TolForge.exe dist/packaged-smoke.json dist/pip-freeze.txt dist/SHA256.txt dist/source-provenance.json --clobber
+          foreach ($profile in @('scalar', 'cad')) {
+            $package = "packages/TolForge-$profile-windows"
+            Copy-Item -LiteralPath "qualification/TolForge-$profile-target-qualification" -Destination "$package/target-qualification" -Recurse
+            Copy-Item -LiteralPath 'verifier/verify_windows_package.ps1' -Destination "$package/target-qualification"
+            $packagePath = (Resolve-Path -LiteralPath $package).Path
+            $manifestPath = Join-Path $packagePath 'SHA256.json'
+            $files = @(Get-ChildItem -LiteralPath $packagePath -File -Recurse |
+              Where-Object { $_.FullName -ne $manifestPath } | Sort-Object FullName | ForEach-Object {
+                [ordered]@{
+                  path = [IO.Path]::GetRelativePath($packagePath, $_.FullName).Replace('\', '/')
+                  sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                  size_bytes = $_.Length
+                }
+              })
+            [ordered]@{ schema_version = 1; profile = $profile; files = $files } |
+              ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+            Compress-Archive -Path "$package/*" -DestinationPath "TolForge-$profile-windows.zip"
+            gh release upload "$env:RELEASE_TAG" "TolForge-$profile-windows.zip" --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Cannot publish qualified $profile package." }
+          }

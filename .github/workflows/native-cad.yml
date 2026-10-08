@@ -1,6 +1,6 @@
 name: Qualify optional native CAD
 
-# Explicit qualification of the source CAD profile; independent of pip-only PR checks.
+# Required source geometry checks; frozen/target checks live in build-release.yml.
 on:
   workflow_dispatch:
 
@@ -10,7 +10,7 @@ permissions:
 jobs:
   qualify-native-cad:
     name: Required STEP backend and analytic geometry
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 30
     defaults:
       run:
@@ -24,12 +24,19 @@ jobs:
       - uses: conda-incubator/setup-miniconda@v3
         with:
           activate-environment: tolforge-cad-ci
-          environment-file: .github/environments/native-cad.yml
+          environment-file: .github/environments/native-cad-win-64.conda.lock
           channels: conda-forge
           channel-priority: strict
           auto-activate-base: false
+          auto-update-conda: false
       - name: Install declared desktop baseline and CAD wrapper
-        run: conda run -n tolforge-cad-ci --no-capture-output python -m pip install -r requirements.txt compas_occ==1.5.0 .
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r .github/environments/windows-release-py312.lock
+          if ($LASTEXITCODE -ne 0) { throw "Desktop lock installation failed." }
+          python -m pip install --require-hashes --no-deps --no-build-isolation -r .github/environments/windows-cad-py312.lock
+          if ($LASTEXITCODE -ne 0) { throw "CAD wrapper installation failed." }
+          python -m pip install --no-deps --no-build-isolation .
+          if ($LASTEXITCODE -ne 0) { throw "Local package installation failed." }
       - name: Verify the qualification interpreter
         run: conda run -n tolforge-cad-ci --no-capture-output python -c "import os, sys; from pathlib import Path; assert sys.version_info[:2] == (3, 12), sys.version; assert Path(sys.prefix).resolve() == Path(os.environ['CONDA_PREFIX']).resolve(); print(sys.executable)"
       - name: Check dependency consistency
@@ -37,7 +44,7 @@ jobs:
       - name: Record resolved environment and source revision
         run: |
           New-Item -ItemType Directory -Path ci-evidence -Force | Out-Null
-          conda list -n tolforge-cad-ci --explicit | Set-Content ci-evidence/conda-explicit-win-64.txt
+          conda list -n tolforge-cad-ci --explicit --sha256 | Set-Content ci-evidence/conda-explicit-win-64.txt
           if ($LASTEXITCODE -ne 0) { throw "Cannot record the native environment." }
           conda run -n tolforge-cad-ci --no-capture-output python -m pip freeze | Set-Content ci-evidence/pip-freeze.txt
           if ($LASTEXITCODE -ne 0) { throw "Cannot record Python dependencies." }
@@ -50,7 +57,7 @@ jobs:
       - name: Describe qualification scope
         if: always()
         run: |
-          "Explicit Windows source CAD qualification: backend imports, generated STEP cylinder round-trips and cylinder/cone recognition. Missing/broken backend and skipped native cases fail. A native viewport, frozen CAD executable and clean-machine distribution are separate qualification work." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "Hash-locked Windows source CAD qualification: backend imports, required geometry cases and representative generated STEP round-trips. Missing/broken backend and skipped native cases fail. Build release workflow separately requires frozen scalar/CAD and native viewport checks on detached targets." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
       - name: Preserve qualification evidence
         if: always()
         uses: actions/upload-artifact@v4

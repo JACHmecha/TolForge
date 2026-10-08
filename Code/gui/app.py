@@ -1063,7 +1063,16 @@ def main():
         index = sys.argv.index("--self-check-json")
         if index + 1 >= len(sys.argv):
             raise SystemExit("--self-check-json requires an output path")
-        raise SystemExit(run_packaged_smoke_check(sys.argv[index + 1], include_cad="--self-check-cad" in sys.argv))
+        expected_profile = None
+        if "--expected-profile" in sys.argv:
+            profile_index = sys.argv.index("--expected-profile")
+            if profile_index + 1 >= len(sys.argv):
+                raise SystemExit("--expected-profile requires scalar or cad")
+            expected_profile = sys.argv[profile_index + 1]
+        raise SystemExit(run_packaged_smoke_check(
+            sys.argv[index + 1], include_cad="--self-check-cad" in sys.argv,
+            expected_profile=expected_profile, qualify_viewport="--self-check-viewport" in sys.argv,
+        ))
     # Bind the optional native CAD reader before Viewer/OpenGL or Windows shell
     # dialogs initialize other native libraries. Failure keeps scalar tools usable
     # and is reported by Load STEP; successful imports are cached by Python.

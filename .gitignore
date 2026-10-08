@@ -11,6 +11,7 @@ env/
 # Empaquetado / distribución
 build/
 *.egg-info/
+dist/
 
 # Editores / SO
 .vscode/

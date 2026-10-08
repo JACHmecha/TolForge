@@ -39,6 +39,11 @@ def _load_native_backend():
 
 
 def pytest_sessionstart(session):
+    # Match source startup before Qt fixtures load, including Windows ICU
+    # selection when a Conda CAD environment has its own versioned ICU DLLs.
+    from gui.runtime import configure_native_runtime
+
+    configure_native_runtime()
     if session.config.getoption("--require-native-cad"):
         try:
             _load_native_backend()
