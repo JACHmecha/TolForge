@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 
 from tolstack.inspection import INSPECTION_FIELDS
 from tolstack.inspection_import import default_mapping, parse_csv_bytes, preview_import
+from gui.table_presentation import configure_table, fit_table_columns
 
 
 class ImportAlignedCsvDialog(QDialog):
@@ -62,6 +63,7 @@ class ImportAlignedCsvDialog(QDialog):
         content.addLayout(form)
         self.mapping_table = QTableWidget(len(INSPECTION_FIELDS), 3)
         self.mapping_table.setHorizontalHeaderLabels(["Measurement field", "CSV column / constant", "Constant value"])
+        configure_table(self.mapping_table, text_columns=(0, 1, 2))
         self.mapping_table.setMinimumHeight(330)
         self.mapping_inputs = {}
         mapping = default_mapping(source)
@@ -84,17 +86,19 @@ class ImportAlignedCsvDialog(QDialog):
                                              control.setEnabled(selection.currentData() is None))
             combo.currentIndexChanged.connect(self.refresh_preview)
             constant.textChanged.connect(self.refresh_preview)
-        self.mapping_table.resizeColumnsToContents()
+        fit_table_columns(self.mapping_table)
         content.addWidget(self.mapping_table)
         self.alignment_check = QCheckBox("I confirm the source measurements and basic coordinates are externally aligned "
                                         "to this datum frame and use the selected units")
         content.addWidget(self.alignment_check)
         content.addWidget(QLabel("Source preview (first 20 rows; validation checks every row)"))
         self.source_preview = QTableWidget()
+        configure_table(self.source_preview)
         self.source_preview.setMinimumHeight(150)
         content.addWidget(self.source_preview)
         content.addWidget(QLabel("Mapped measurements (first 20 rows)"))
         self.mapped_preview = QTableWidget()
+        configure_table(self.mapped_preview, numeric_columns=range(1, 9), text_columns=(0, 9, 10))
         self.mapped_preview.setMinimumHeight(150)
         content.addWidget(self.mapped_preview)
         self.errors_label = QLabel()
@@ -140,7 +144,7 @@ class ImportAlignedCsvDialog(QDialog):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 table.setItem(row, column, item)
-        table.resizeColumnsToContents()
+        fit_table_columns(table)
 
     def _delimiter_changed(self):
         if self._building:
@@ -182,9 +186,23 @@ class ImportAlignedCsvDialog(QDialog):
             self.errors_label.setText(self._delimiter_error)
             self.buttons.button(QDialogButtonBox.Ok).setEnabled(False)
             return
+        options = self.options()
+        numeric_source_columns = {
+            options["mapping"][field].get("column") for field in INSPECTION_FIELDS[1:9]
+        }
+        text_source_columns = {
+            options["mapping"][field].get("column")
+            for field in (INSPECTION_FIELDS[0], *INSPECTION_FIELDS[9:])
+        }
+        configure_table(
+            self.source_preview,
+            numeric_columns=tuple(index for index, header in enumerate(self.source.headers)
+                                  if header in numeric_source_columns - text_source_columns),
+            text_columns=tuple(index for index, header in enumerate(self.source.headers)
+                               if header not in numeric_source_columns - text_source_columns),
+        )
         self._fill_table(self.source_preview, self.source.headers, [record for _, record in self.source.records])
         # Display mapping before confirmation, while acceptance remains gated by the real checkbox.
-        options = self.options()
         display = dict(options)
         display["external_alignment"] = dict(options["external_alignment"], confirmed=True)
         if not display["external_alignment"]["datum_frame"].strip():

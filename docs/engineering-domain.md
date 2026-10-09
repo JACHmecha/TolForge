@@ -82,8 +82,12 @@ not cached results silently restored as current after loading a project.
 
 Project files reference CAD paths; geometry is not embedded. The dimension bank
 is saved separately. Camera/layout, measurement slots, live offset deviations,
-direction/visibility controls, histogram samples, and Eclipse settings are not
-a full persisted session. Datum synchronization requires a complete A/B/C set;
+direction/visibility controls and histogram samples are not a full persisted
+session. The optional `study.projected_interference` block stores validated
+inputs, mode, local length units, seed, iterations, area threshold and CAD
+projection metadata. `tolstack.projected_study` validates this block on save
+and load. Analysis samples/results are not restored. Recovery drafts preserve
+incomplete raw module text separately. Datum synchronization requires a complete A/B/C set;
 an incomplete UI selection does not replace a previously stored datum system.
 
 `gui/project_lifecycle.py` tracks domain and raw editor changes, guards project

@@ -24,6 +24,10 @@ from .gdt import (
     PinHoleClearanceEvaluation, actual_mating_boundary,
     evaluate_pin_hole_clearance, size_limits, size_margin, virtual_condition,
 )
+from .projected_interference import (
+    PinHoleInputs, PinHoleMonteCarloResult, pin_outside_fraction,
+    radial_clearance, radial_clearance_bounds, run_pin_hole_monte_carlo,
+)
 
 __all__ = [
     "Stack",
@@ -56,4 +60,10 @@ __all__ = [
     "size_limits",
     "size_margin",
     "virtual_condition",
+    "PinHoleInputs",
+    "PinHoleMonteCarloResult",
+    "pin_outside_fraction",
+    "radial_clearance",
+    "radial_clearance_bounds",
+    "run_pin_hole_monte_carlo",
 ]

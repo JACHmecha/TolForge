@@ -92,6 +92,7 @@ class ProjectMixin(FeatureRelinkingMixin, ProjectLifecycleMixin):
             self.drf_status_label.setText("Datum reference frame not built yet.")
             self.clear_step_preview()
             self._study_restore()
+            self._project_restore_projected_interference()
         self._project_mark_clean()
         self._project_update_title()
         return True
@@ -154,6 +155,7 @@ class ProjectMixin(FeatureRelinkingMixin, ProjectLifecycleMixin):
             self._project_clear_loaded_source_evidence()
             self._project_restore_stack_to_ui()
             self._study_restore()
+            self._project_restore_projected_interference()
             self.pattern_table.setRowCount(0)
             for slot in ("Primary", "Secondary", "Tertiary"):
                 self._datum_slot[slot] = None
@@ -208,6 +210,7 @@ class ProjectMixin(FeatureRelinkingMixin, ProjectLifecycleMixin):
                 if getattr(self, "_project_revision_pending", False):
                     raise ValueError("Review and accept the loaded CAD revision before saving an engineering project.")
                 self._study_capture()
+                self._project_sync_projected_interference()
                 datum_count = sum(entry is not None for entry in self._datum_slot.values())
                 if datum_count not in (0, 3) or (self.project.datum_systems and datum_count != 3):
                     raise ValueError("Complete the A/B/C datum selection before saving. The existing saved datum system has not been replaced.")
@@ -240,6 +243,23 @@ class ProjectMixin(FeatureRelinkingMixin, ProjectLifecycleMixin):
         self._project_update_title()
         self.step_status_label.setText(f"Saved project: {Path(path).name}")
         return True
+
+    def _project_sync_projected_interference(self):
+        capture = getattr(self, "_eclipse_save_settings", None)
+        if capture is None:
+            return
+        settings = capture()
+        if settings is None:
+            self.project.study.pop("projected_interference", None)
+        else:
+            from tolstack.projected_study import validate_projected_interference
+            validate_projected_interference(settings)
+            self.project.study["projected_interference"] = deepcopy(settings)
+
+    def _project_restore_projected_interference(self):
+        restore = getattr(self, "_eclipse_restore_settings", None)
+        if restore is not None:
+            restore(deepcopy(self.project.study.get("projected_interference")))
 
     def _project_update_title(self):
         suffix = Path(self._project_path).name if self._project_path else "Unsaved"

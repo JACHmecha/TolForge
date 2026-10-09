@@ -1,0 +1,15 @@
+Created with the built-in image generation tool.
+Primary logo: tolforge-logo-v1.png (transparent PNG).
+Designed for use on light backgrounds.
+
+Use case: logo-brand
+Asset type: finished primary logo for a mechanical engineering desktop application, suitable for website, documentation, and application branding.
+Primary request: Create an original, polished logo for "TolForge", a tool for mechanical tolerance stack analysis, STEP inspection, and dimensional precision.
+Scene/backdrop: genuinely transparent background, no surrounding scene.
+Subject: a distinctive compact geometric TF monogram, built from two precisely aligned machined-looking flat shapes with a deliberate narrow negative-space clearance between them. The letters T and F should feel integrated into one strong, simple silhouette, conveying engineered fit, dimension stacks, and precision. Pair the symbol with an elegant clear wordmark.
+Style/medium: minimal vector-like graphic, crisp straight edges, solid fills, excellent optical balance, robust at small sizes.
+Composition/framing: one horizontal logo lockup, symbol followed by wordmark; centered with generous clear margin; symbol approximately the cap height or slightly taller. Keep the mark simple, confident, and memorable.
+Color palette: existing TolForge application palette: engineering blue #71B6DF for the symbol, dark graphite #20262C for the wordmark. Transparent negative space. Restrained two-color identity.
+Text (verbatim): "TolForge" — spell T-o-l-F-o-r-g-e exactly, capital T and F, lowercase other letters. One word. Render only this text once in a modern, sturdy geometric sans-serif with carefully adjusted spacing and easy readability.
+Constraints: one single finished logo, genuine transparent alpha; no slogan, no extra text, no presentation board, no alternative variants in the same image, no texture, no tiny measurement annotations. Strong silhouette and balanced negative space. Original design.
+Avoid: generic gear wheels, flames, anvils, hammers, decorative swooshes, stock badges, thin fragile linework, gradients, shadows, bevels, simulated 3D, mockups, watermarks.

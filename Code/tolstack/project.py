@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 from .workflow import validate_study
+from .projected_study import validate_projected_interference
 from .json_data import (
     loads_strict, require_finite_number, require_text, validate_json_value,
 )
@@ -194,6 +195,8 @@ class Project:
                 if key in self.study:
                     require_finite_number(self.study[key], f"Study {key}")
         validate_study(self.study)
+        if "projected_interference" in self.study:
+            validate_projected_interference(self.study["projected_interference"])
 
         for occurrence in self.occurrences.values():
             if occurrence.part_definition_id not in self.parts:

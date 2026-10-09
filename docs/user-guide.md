@@ -5,7 +5,7 @@
 ## Workspace layout
 
 The left rail selects Inspect, Study, Library, Stack, Results, Measure, GD&T, or
-Eclipse. The 3D viewport stays visible. Drag the divider to widen the workspace;
+Projected interference. The 3D viewport stays visible. Drag the divider to widen the workspace;
 Stack, Measure, and the longer analysis panels scroll as needed.
 
 The viewport toolbar contains Load STEP, Cancel load, Clear, and Analyze. Mesh quality and
@@ -304,7 +304,7 @@ or a separate parallel axis. Concentric axes or a second end plane do not fix
 that remaining rotation. Other supported combinations and restrictions are in
 [GD&T semantics](gdt-semantics.md#datum-reference-frames).
 
-## Position patterns and Eclipse
+## Position patterns and Projected interference
 
 After building a frame, pick circular pattern features and enter drawing basic
 X/Y coordinates. Actual X/Y are derived from geometry in the current frame.
@@ -322,11 +322,66 @@ Pattern cells can display rounded numbers while calculations and project files
 retain their full precision. Opening a cell editor shows its full value;
 accepting an unchanged value preserves it.
 
-Eclipse estimates light blockage by two circular apertures using their diameters
-and relative offset. It can reuse measured diameters/offsets and run full-zone
-worst-case and Monte Carlo analyses. The worst-case range includes interior
-diameter extrema and is evaluated numerically. It is a circular-aperture model,
-not optical ray tracing.
+Projected interference has two modes using circular diameters and relative
+offsets X/Y in a common plane perpendicular to the insertion axis:
+
+- **Hole–hole** (default): loss of common opening area relative to the smaller
+  hole. A concentric pair has 0% loss; separated circles have 100% loss.
+  Full-zone area bounds include interior diameter extrema and are evaluated
+  numerically, alongside Monte Carlo statistics.
+- **Hole–pin**: the fraction of the pin area outside the hole,
+  `1 - intersection_area / pin_area`, and minimum radial clearance,
+  `(hole_diameter - pin_diameter) / 2 - hypot(offset_x, offset_y)`.
+Positive clearance means gap, zero means contact and negative means
+  interference. A centered oversized pin therefore has nonzero outside area.
+
+At tangency, clearances within the floating-point roundoff of the radius and
+offset operands are reported as numerical contact. This numerical resolution
+is separate from the user-entered engineering tolerances; centered oversized
+pins and equal-diameter pairs with nonzero offsets still indicate interference.
+
+Use measured A for Hole A / Hole and measured B for Hole B / Pin. Choose a
+**CAD reference X axis** (world X, Y or Z), then **Use measured circles A/B and
+signed X/Y offsets**. This transfers both diameters and projects A-to-B center
+displacement into a stable right-handed plane at A. Axial separation is
+excluded; signed X/Y components are retained so different X/Y tolerances
+remain meaningful. Opposing normal signs are equivalent. An axis mismatch
+greater than 0.1 degrees rejects the transfer without changing current inputs.
+If the chosen reference is parallel to the plane normal, the displayed basis
+uses a deterministic alternate world axis. Changing the reference selector
+applies on the next transfer. Manual nominal edits remove the CAD snapshot;
+tolerances describe process variation in the selected local basis.
+
+**Length units** selects mm or in for this module. Switching units converts
+all diameters, signed offsets and length tolerances together using
+`1 in = 25.4 mm`; Cpk, percentages, iterations and the seed are unchanged.
+Incomplete or nonfinite length text rejects conversion without partially
+changing values. Measured CAD lengths use the current mm CAD workspace and
+are converted to the selected module unit on transfer. Clearance results and
+axes display their units. This workspace conversion does not change other
+TolForge studies or the CAD model.
+
+The live **Nominal cross-section** draws the circular geometry to scale,
+highlighting the common opening for Hole–hole and pin area outside the hole
+for Hole–pin. Positive Y is up. Drag to pan, scroll or use +/− to zoom, and
+choose Fit to reset. The preview uses nominal inputs, independent of the
+Monte Carlo histogram. Tilt, insertion depth, deformation, optical ray tracing
+and GD&T assembly rules are not modeled.
+
+Both modes report area mean, standard deviation, observed Monte Carlo range
+and probability of exceeding the selected area percentage. Hole–pin also
+reports clearance statistics and `P(clearance < 0)`; exact contact is excluded
+from that probability. Its full-zone clearance bounds use diameter extremes
+and the nearest/farthest points of the X/Y tolerance box, including an interior
+origin. Its area range is observed in Monte Carlo, not a guaranteed bound.
+Changing inputs or mode clears previous results and charts.
+
+Set **Simulation seed** to an integer from 0 to 4294967295 to reproduce a run
+with the same inputs and software environment. Blank chooses a fresh isolated
+random generator. Runs do not consume other studies' global random stream.
+Uniform and Cpk-calibrated sampling keep the existing independent-input
+conventions; a seed alone does not promise identical streams across NumPy
+versions.
 
 Use finite numbers, nonnegative tolerance magnitudes, positive diameter ranges,
 and a positive Cpk when supplied. The threshold is a percentage from 0 to 100.
@@ -344,6 +399,12 @@ and loads its CAD source when available; otherwise load the source manually.
 Project saving also stores Study requirements/assumptions, analysis settings,
 units confirmation, inspection references, measurement rows, and scope/alignment
 confirmations, drawing-control definitions and imported source descriptors.
+Projected interference also saves its mode, local units, seed, iterations,
+threshold, diameter/offset inputs, tolerances, Cpk and CAD projection basis.
+Reopened studies retain their inputs and nominal preview; run again to obtain
+current results. Older files without this optional block reset the module to
+its defaults. Incomplete module inputs belong in recovery drafts; they cannot
+replace a valid engineering save.
 Reopening restores inputs; run evaluation again for a current
 report. Older schema-1 projects without Study settings remain supported.
 
@@ -366,9 +427,9 @@ interrupted session. Successful project saves or deliberate discard remove
 the associated automatic draft. Manual recovery files remain where you saved
 them. A draft does not make incomplete work valid or replace CAD source files.
 
-Save the dimension bank separately. Camera position, preview controls, current
-measurement slots, histogram samples, and Eclipse settings are not a complete
-saved session. Build a complete, valid datum system before saving it; the bridge
+Save the dimension bank separately. Camera position, preview pan/zoom, current
+measurement slots and histogram samples are not a complete saved session.
+Build a complete, valid datum system before saving it; the bridge
 only synchronizes a full A/B/C set. Signature matching is heuristic: a changed
 or ambiguous feature may need manual reassignment.
 

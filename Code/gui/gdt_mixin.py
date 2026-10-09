@@ -20,6 +20,7 @@ from tolstack.gdt import (
 )
 from gui.theme import COLORS, style_axes
 from gui.datum_inspection import DatumInspectionMixin, DATUM_STYLES
+from gui.table_presentation import fit_table_columns
 from tolstack.analysis import parse_optional_cpk, parse_seed
 from tolstack.reporting import build_report_evidence, project_report_context
 
@@ -46,6 +47,7 @@ class PatternNumericItem(QTableWidgetItem):
     def __init__(self, value, decimals=4):
         super().__init__()
         self._display_decimals = decimals
+        self.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         super().setData(PATTERN_RAW_VALUE_ROLE, float(value))
         self.set_display_precision(decimals)
 
@@ -384,7 +386,7 @@ class GdtMixin(DatumInspectionMixin):
         for column in (3, 4):
             item = table.item(row, column)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-        table.resizeColumnsToContents()
+        fit_table_columns(table)
 
     def pattern_remove_selected(self):
         rows = sorted({idx.row() for idx in self.pattern_table.selectedIndexes()}, reverse=True)
@@ -529,7 +531,7 @@ class GdtMixin(DatumInspectionMixin):
             item = QTableWidgetItem(text)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self.pattern_table.setItem(row, 9, item)
-        self.pattern_table.resizeColumnsToContents()
+        fit_table_columns(self.pattern_table)
         self._last_gdt_report = report
         self._last_gdt_report.update(method="as_modeled", features=[
             {"name": name, "evaluation": asdict(evaluation)} for name, evaluation in results])

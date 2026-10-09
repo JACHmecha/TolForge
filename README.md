@@ -40,7 +40,10 @@ It uses PySide6, NumPy, Matplotlib, COMPAS, and OpenCASCADE.
 - STEP viewing with face, edge, vertex, and whole-solid selection, plus
   contextual measurement, datum, pattern, and stack-link actions.
 - A resizable viewport and workspace panel, with Inspect, Study, Library, Stack,
-  Results, Measure, GD&T, and Eclipse navigation.
+  Results, Measure, GD&T, and Projected interference navigation.
+  Projected interference supports hole–hole/hole–pin studies with signed CAD
+  projection, mm/in conversion, isolated seeded simulations, saved/recoverable
+  inputs and an interactive nominal cross-section.
 - Measured-part Study with drawing/source/alignment references, CSV import,
   per-feature size/position checks, persisted inputs, and report invalidation.
 - Live nominal-relative surface previews with numeric/slider controls,

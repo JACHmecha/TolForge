@@ -55,11 +55,26 @@ QLabel[role="heading"] {{
     font-size: 20px;
     font-weight: 600;
 }}
+QLabel[role="sectionHeading"] {{
+    font-size: 14px;
+    font-weight: 600;
+    color: {COLORS['text']};
+}}
+QLabel[role="metric"] {{
+    font-size: 18px;
+    font-weight: 600;
+    color: {COLORS['text']};
+}}
 QLabel#brandMark {{
     color: {COLORS['accent']};
     font-size: 23px;
     font-weight: 700;
     min-height: 48px;
+}}
+QLabel#brandMark[brandArtwork="true"] {{
+    background-color: {COLORS['text']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 6px;
 }}
 QLabel#railCaption {{
     color: {COLORS['muted']};

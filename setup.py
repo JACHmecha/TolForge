@@ -25,6 +25,7 @@ setup(
     },
     package_data={
         "gui": [
+            "assets/branding/*.png",
             "assets/icons/gdt/*.svg",
             "assets/icons/gdt/*.json",
             "assets/icons/gdt/*.md",

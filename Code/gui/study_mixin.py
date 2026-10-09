@@ -5,7 +5,7 @@ from copy import deepcopy
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox,
+    QWidget, QVBoxLayout, QFormLayout, QLabel, QLineEdit, QFrame, QSizePolicy,
     QComboBox, QPushButton, QTableWidget, QTableWidgetItem, QFileDialog,
     QMessageBox, QScrollArea, QDialog,
 )
@@ -17,6 +17,8 @@ from tolstack.workflow import study_readiness, validate_study
 from tolstack.persistence import save_json
 from tolstack.inspection_import import read_aligned_csv, preview_import, normalized_frame, validate_row_metadata
 from gui.inspection_import_dialog import ImportAlignedCsvDialog
+from gui.layout_presentation import WrappedCheckBox
+from gui.table_presentation import configure_table, fit_table_columns
 
 
 class StudyMixin:
@@ -25,9 +27,58 @@ class StudyMixin:
     def _create_study_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        intro = QLabel("1 Define requirement → 2 Establish datum alignment → 3 Enter drawing controls and measurements → 4 Validate → 5 Evaluate → 6 Review and report")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        def wrapped_label(text, role="muted"):
+            label = QLabel(text)
+            label.setProperty("role", role)
+            label.setWordWrap(True)
+            label.setMinimumWidth(0)
+            policy = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            policy.setHeightForWidth(True)
+            label.setSizePolicy(policy)
+            return label
+
+        def section(title):
+            card = QFrame()
+            card.setProperty("surface", "card")
+            contents = QVBoxLayout(card)
+            contents.setContentsMargins(16, 16, 16, 16)
+            contents.setSpacing(10)
+            contents.addWidget(wrapped_label(title, "sectionHeading"))
+            layout.addWidget(card)
+            return contents
+
+        def compact_form():
+            form = QFormLayout()
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setHorizontalSpacing(12)
+            form.setVerticalSpacing(10)
+            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            return form
+
+        def action_rows(contents, actions):
+            form = compact_form()
+            buttons = []
+            for text, callback in actions:
+                button = QPushButton(text)
+                button.clicked.connect(callback)
+                buttons.append(button)
+            for index in range(0, len(buttons), 2):
+                if index + 1 < len(buttons):
+                    form.addRow(buttons[index], buttons[index + 1])
+                else:
+                    form.addRow(buttons[index])
+            contents.addLayout(form)
+
+        layout.addWidget(wrapped_label(
+            "1 Define requirement → 2 Establish datum alignment → 3 Enter drawing controls and measurements "
+            "→ 4 Validate → 5 Evaluate → 6 Review and report"
+        ))
+
+        references = section("References and requirement")
         self.study_objective_input = QLineEdit()
         self.study_objective_input.setPlaceholderText("Functional requirement / drawing characteristic")
         self.study_assumptions_input = QLineEdit()
@@ -38,92 +89,84 @@ class StudyMixin:
         self.inspection_source_input.setPlaceholderText("Part/serial ID and CMM or inspection record")
         self.inspection_datum_input = QLineEdit()
         self.inspection_datum_input.setPlaceholderText("Datum order/alignment, e.g. A | B | C, RFS")
+        references_form = compact_form()
         for caption, widget in (
             ("Requirement", self.study_objective_input), ("Assumptions", self.study_assumptions_input),
             ("Drawing reference", self.inspection_drawing_input), ("Measurement source", self.inspection_source_input),
-            ("Measurement datum frame", self.inspection_datum_input),
         ):
-            layout.addWidget(QLabel(caption))
-            layout.addWidget(widget)
+            references_form.addRow(caption, widget)
+        references.addLayout(references_form)
+
+        alignment = section("Datum alignment and scope")
         self.inspection_units_combo = QComboBox()
         self.inspection_units_combo.addItems(["mm", "in"])
-        units_row = QHBoxLayout()
-        units_row.addWidget(QLabel("Inspection data units"))
-        units_row.addWidget(self.inspection_units_combo)
-        layout.addLayout(units_row)
-        self.inspection_alignment_check = QCheckBox("Measurements and basic coordinates share this datum frame and units")
-        self.inspection_scope_check = QCheckBox("Single-segment position; axes parallel to datum Z; no datum mobility")
-        self.study_units_check = QCheckBox("CAD study inputs use project units: mm / deg")
-        layout.addWidget(self.inspection_alignment_check)
-        layout.addWidget(self.inspection_scope_check)
-        layout.addWidget(self.study_units_check)
-        hint = QLabel("Enter measured centers already aligned by your inspection system. CAD inspection and process prediction remain in GD&T. No datum fitting, form/orientation evaluation or uncertainty decision rule is applied here.")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        layout.addWidget(QLabel("Drawing controls and coverage"))
-        control_hint = QLabel(
+        alignment_form = compact_form()
+        alignment_form.addRow("Measurement datum frame", self.inspection_datum_input)
+        alignment_form.addRow("Inspection data units", self.inspection_units_combo)
+        alignment.addLayout(alignment_form)
+        self.inspection_alignment_check = WrappedCheckBox("Measurements and basic coordinates share this datum frame and units")
+        self.inspection_scope_check = WrappedCheckBox("Single-segment position; axes parallel to datum Z; no datum mobility")
+        self.study_units_check = WrappedCheckBox("CAD study inputs use project units: mm / deg")
+        alignment.addWidget(self.inspection_alignment_check)
+        alignment.addWidget(self.inspection_scope_check)
+        alignment.addWidget(self.study_units_check)
+        alignment.addWidget(wrapped_label(
+            "Enter measured centers already aligned by your inspection system. CAD inspection and process prediction "
+            "remain in GD&T. No datum fitting, form/orientation evaluation or uncertainty decision rule is applied here."
+        ))
+
+        drawing_controls = section("Drawing controls and coverage")
+        drawing_controls.addWidget(wrapped_label(
             "Record every requested control, including unsupported characteristics. "
             "Position specification: diametral tolerance, e.g. 0.2. "
             "Size specification: minimum:maximum, e.g. 10:10.2. "
             "Use the measurement units and datum reference recorded above. "
             "Other callouts are retained for review and remain unevaluated."
-        )
-        control_hint.setWordWrap(True)
-        layout.addWidget(control_hint)
+        ))
         self.characteristic_table = QTableWidget(0, len(CONTROL_FIELDS) + 1)
         self.characteristic_table.setHorizontalHeaderLabels([
             "Control ID", "Balloon", "Drawing", "Revision", "Characteristic",
             "Specification", "Datum reference", "Measured feature", "Coverage / result",
         ])
+        configure_table(self.characteristic_table, text_columns=tuple(range(len(CONTROL_FIELDS) + 1)))
         self.characteristic_table.setMinimumHeight(180)
-        layout.addWidget(self.characteristic_table)
-        controls = QHBoxLayout()
-        for text, callback in (("Add drawing control", self._drawing_control_add_row),
-                               ("Remove control", self._drawing_control_remove_rows)):
-            button = QPushButton(text)
-            button.clicked.connect(callback)
-            controls.addWidget(button)
-        layout.addLayout(controls)
-        self.characteristic_coverage_label = QLabel("No drawing-control inventory recorded.")
-        self.characteristic_coverage_label.setWordWrap(True)
-        layout.addWidget(self.characteristic_coverage_label)
-        layout.addWidget(QLabel("Aligned feature measurements"))
+        drawing_controls.addWidget(self.characteristic_table)
+        action_rows(drawing_controls, (
+            ("Add drawing control", self._drawing_control_add_row),
+            ("Remove control", self._drawing_control_remove_rows),
+        ))
+        self.characteristic_coverage_label = wrapped_label("No drawing-control inventory recorded.")
+        drawing_controls.addWidget(self.characteristic_coverage_label)
+
+        measurements = section("Aligned feature measurements")
         self.inspection_table = QTableWidget(0, len(INSPECTION_FIELDS) + 1)
         self.inspection_table.setHorizontalHeaderLabels([
             "Feature", "Basic X", "Basic Y", "Measured X", "Measured Y", "Measured Ø",
             "Size min", "Size max", "Position ØT", "Modifier", "Hole/pin", "Result",
         ])
+        configure_table(self.inspection_table, numeric_columns=tuple(range(1, 9)), text_columns=(0, 9, 10, 11))
         self.inspection_table.setMinimumHeight(220)
-        layout.addWidget(self.inspection_table)
-        actions = QHBoxLayout()
-        for text, callback in (("Add feature", self._inspection_add_row), ("Remove", self._inspection_remove_rows),
-                               ("Import CSV", self._inspection_import_csv)):
-            button = QPushButton(text)
-            button.clicked.connect(callback)
-            actions.addWidget(button)
-        layout.addLayout(actions)
-        actions = QHBoxLayout()
-        for text, callback in (("Evaluate measured part", self._evaluate_inspection),
-                               ("Export report", self._export_inspection)):
-            button = QPushButton(text)
-            button.clicked.connect(callback)
-            actions.addWidget(button)
-        layout.addLayout(actions)
-        self.inspection_result_label = QLabel("No measured-part result yet.")
-        self.inspection_result_label.setWordWrap(True)
-        layout.addWidget(self.inspection_result_label)
-        layout.addWidget(QLabel("CAD position-study readiness"))
-        self.study_advisor_label = QLabel("Validate the CAD model before analysis.")
-        self.study_advisor_label.setWordWrap(True)
-        layout.addWidget(self.study_advisor_label)
-        actions = QHBoxLayout()
-        for text, callback in (("Check CAD study", self._refresh_study_advisor),
-                               ("Open GD&T", lambda: self._show_workspace("gdt")),
-                               ("Open stack results", lambda: self._show_workspace("results"))):
-            button = QPushButton(text)
-            button.clicked.connect(callback)
-            actions.addWidget(button)
-        layout.addLayout(actions)
+        measurements.addWidget(self.inspection_table)
+        action_rows(measurements, (
+            ("Add feature", self._inspection_add_row), ("Remove", self._inspection_remove_rows),
+            ("Import CSV", self._inspection_import_csv),
+        ))
+
+        results = section("Results and readiness")
+        results.addWidget(wrapped_label("Measured-part results", "sectionHeading"))
+        self.inspection_result_label = wrapped_label("No measured-part result yet.", "status")
+        results.addWidget(self.inspection_result_label)
+        action_rows(results, (
+            ("Evaluate measured part", self._evaluate_inspection), ("Export report", self._export_inspection),
+        ))
+        results.addWidget(wrapped_label("CAD position-study readiness", "sectionHeading"))
+        self.study_advisor_label = wrapped_label("Validate the CAD model before analysis.")
+        results.addWidget(self.study_advisor_label)
+        action_rows(results, (
+            ("Check CAD study", self._refresh_study_advisor),
+            ("Open GD&T", lambda: self._show_workspace("gdt")),
+            ("Open stack results", lambda: self._show_workspace("results")),
+        ))
         layout.addStretch(1)
         self._last_inspection_report = None
         self._inspection_source_files = []
@@ -138,6 +181,7 @@ class StudyMixin:
         self.inspection_alignment_check.toggled.connect(self._invalidate_inspection)
         self.inspection_scope_check.toggled.connect(self._invalidate_inspection)
         scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setWidget(page)
         self.study_tab = scroll
@@ -163,7 +207,7 @@ class StudyMixin:
                 table.setItem(row, column, item)
         finally:
             table.blockSignals(previous)
-        table.resizeColumnsToContents()
+        fit_table_columns(table)
         self._invalidate_inspection()
         self._drawing_control_context_changed()
 
@@ -205,7 +249,7 @@ class StudyMixin:
                 self.inspection_table.setItem(row, col, item)
         finally:
             self.inspection_table.blockSignals(previous)
-        self.inspection_table.resizeColumnsToContents()
+        fit_table_columns(self.inspection_table)
         if notify:
             self._invalidate_inspection()
             self._inspection_context_changed()

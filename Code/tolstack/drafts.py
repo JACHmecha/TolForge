@@ -119,6 +119,9 @@ def validate_draft(data) -> None:
     source_files = ui.get("inspection_source_files", [])
     if not isinstance(source_files, list) or any(not isinstance(value, dict) for value in source_files):
         raise ValueError("Draft inspection source descriptors must be objects.")
+    if ui.get("projected_interference_projection") is not None:
+        from .projected_study import validate_projection_config
+        validate_projection_config(ui["projected_interference_projection"])
 
 
 def save_draft(path, data) -> None:

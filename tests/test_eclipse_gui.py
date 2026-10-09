@@ -100,9 +100,14 @@ def test_valid_threshold_updates_results_and_histogram(monkeypatch, threshold):
 
 
 def test_measured_circle_and_offset_transfers_preserve_full_precision():
+    from contextlib import nullcontext
+
     harness = EclipseHarness()
     radius, offset = 1.000000123456789, 0.000040000123456
-    harness._measure_slot = {"A": {"circle": {"radius": radius}}}
+    harness._measure_slot = {"A": {"circle": {"radius": radius, "center": [0, 0, 0], "normal": [0, 0, 1]}},
+                             "B": {"circle": {"radius": 1, "center": [offset, 0, 2], "normal": [0, 0, 1]}}}
+    harness.eclipse_reference_axis_combo = SimpleNamespace(currentText=lambda: "X")
+    harness._eclipse_widget_update = nullcontext
     harness._measure_last = {"circle_center_distance": offset}
     harness.use_measured_a_for_handle()
     harness.use_measured_offset()

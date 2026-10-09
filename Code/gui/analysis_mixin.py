@@ -99,7 +99,7 @@ class AnalysisMixin:
         result = report.result
         seed = report.settings.seed
 
-        self.result_label.setText(
+        text = (
             f"{report.settings.response_name}\n"
             f"Monte Carlo ({len(samples):,} samples; seed: {seed if seed is not None else 'random'})\n"
             f"{'-' * 30}\n"
@@ -109,6 +109,9 @@ class AnalysisMixin:
             + self._contribution_text(report) + "\n"
             + self._fit_text(report.fit_at_zero)
         )
+        self.result_label.setText(text)
+        if hasattr(self.result_label, "set_report"):
+            self.result_label.set_report(report, text)
 
     def _get_interval_stats(self, samples, lower: float, upper: float):
         inside_mask = (samples >= lower) & (samples <= upper)
@@ -268,7 +271,7 @@ class AnalysisMixin:
 
     def _show_stack_result(self, result, fit):
         report = getattr(self, "_last_analysis_report", None)
-        self.result_label.setText(
+        text = (
             (f"{report.settings.response_name}\n" if report is not None else "")
             + f"{'-' * 30}\n"
             f"Nominal : {result.nominal:.4f}\n"
@@ -279,6 +282,9 @@ class AnalysisMixin:
             + (self._acceptance_text(report) + "\n" + self._contribution_text(report) + "\n" if report is not None else "")
             + self._fit_text(fit)
         )
+        self.result_label.setText(text)
+        if report is not None and hasattr(self.result_label, "set_report"):
+            self.result_label.set_report(report, text)
 
     def _plot_histogram(self, samples):
         self.figure.clear()

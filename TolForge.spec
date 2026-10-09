@@ -48,6 +48,7 @@ a = Analysis(
     binaries=viewer_binaries + cad_binaries,
     datas=viewer_datas + cad_datas + package_metadata + collect_data_files('compas') + [
         (str(metadata_path), '.'),
+        (str(root / 'Code' / 'gui' / 'assets' / 'branding' / 'tolforge-logo-v1.png'), 'gui/assets/branding'),
         (str(root / 'Code' / 'gui' / 'assets' / 'icons' / 'gdt'), 'gui/assets/icons/gdt'),
     ],
     hiddenimports=viewer_hiddenimports + cad_hiddenimports + ['PySide6.QtSvg'],

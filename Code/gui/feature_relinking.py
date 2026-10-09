@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from tolstack.features import signature_from_points
 from tolstack.relinking import plan_relinking, validate_manual_assignment
+from gui.table_presentation import configure_table, fit_table_columns
 
 
 class FeatureRelinkingDialog(QDialog):
@@ -35,6 +36,7 @@ class FeatureRelinkingDialog(QDialog):
         layout.addLayout(actions)
         self.features = QTableWidget(0, 6)
         self.features.setHorizontalHeaderLabels(["Saved feature", "Stable ID", "Kind", "State", "Best score", "Reason"])
+        configure_table(self.features, numeric_columns=(4,), text_columns=(0, 1, 2, 3, 5))
         self.features.setSelectionBehavior(QTableWidget.SelectRows)
         self.features.setSelectionMode(QTableWidget.SingleSelection)
         self.features.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -46,6 +48,7 @@ class FeatureRelinkingDialog(QDialog):
         layout.addWidget(hint)
         self.candidates = QTableWidget(0, 4)
         self.candidates.setHorizontalHeaderLabels(["Loaded entity", "Score", "Availability", "Comparison"])
+        configure_table(self.candidates, numeric_columns=(1,), text_columns=(0, 2, 3))
         self.candidates.setSelectionBehavior(QTableWidget.SelectRows)
         self.candidates.setSelectionMode(QTableWidget.SingleSelection)
         self.candidates.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -84,7 +87,7 @@ class FeatureRelinkingDialog(QDialog):
                       "—" if diagnostic.best_score is None else f"{diagnostic.best_score:.6g}", diagnostic.reason]
             for column, value in enumerate(values):
                 self.features.setItem(row, column, QTableWidgetItem(value))
-        self.features.resizeColumnsToContents()
+        fit_table_columns(self.features)
         self.candidates.setRowCount(0)
 
     def _show_candidates(self):
@@ -107,7 +110,7 @@ class FeatureRelinkingDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, candidate.entity_index)
                 self.candidates.setItem(row, column, item)
-        self.candidates.resizeColumnsToContents()
+        fit_table_columns(self.candidates)
 
     def _assign(self):
         feature_row, candidate_row = self.features.currentRow(), self.candidates.currentRow()

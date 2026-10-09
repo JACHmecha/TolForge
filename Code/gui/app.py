@@ -1,7 +1,7 @@
 """Desktop GUI for TolForge (PySide6).
 
 A left navigation rail selects Inspect, Library, Stack, Results, Measure,
-GD&T, and Eclipse. The main STEP viewport and right workspace panel are
+GD&T, and Projected interference. The main STEP viewport and right workspace panel are
 resizable. Load/Clear/Analyze controls stay above the viewport; analysis
 settings live in Results. Mixins implement analysis, measurement, linked
 previews, datum inspection, and project persistence.
@@ -23,9 +23,11 @@ from PySide6.QtWidgets import (
     QTableWidget, QPushButton, QLabel, QComboBox,
     QHeaderView, QLineEdit,
     QCheckBox, QDoubleSpinBox, QSpinBox,
-    QTabWidget, QFrame, QSizePolicy, QScrollArea, QButtonGroup, QSplitter, QProgressBar
+    QTabWidget, QFrame, QSizePolicy, QScrollArea, QButtonGroup, QSplitter, QProgressBar,
+    QFormLayout,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QPixmap
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
@@ -46,6 +48,10 @@ from gui.offset_preview import OffsetControls
 from gui.datum_inspection import DATUM_STYLES
 from gui.stack_table import StackTableView
 from gui.study_mixin import StudyMixin
+from gui.projected_preview import ProjectedPreview
+from gui.analysis_summary import AnalysisSummary
+from gui.layout_presentation import ResponsiveFieldGrid, wrap_label
+from gui.table_presentation import configure_table, fit_table_columns
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "+/-", "Cpk"]
 
@@ -176,14 +182,8 @@ class TolstackWindow(
 
         self.table = StackTableView(0, len(COLUMNS) + 1)  # +1 for the 3D-link Value column
         self.table.setHorizontalHeaderLabels(COLUMNS + ["3D Value"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.horizontalHeader().setMinimumSectionSize(50)
-        self.table.setAlternatingRowColors(True)
-        self.table.setShowGrid(False)
-        self.table.verticalHeader().setDefaultSectionSize(36)
-        self.table.setColumnWidth(0, 150)
-        for column in range(1, len(COLUMNS) + 1):
-            self.table.setColumnWidth(column, 78)
+        configure_table(self.table, numeric_columns=(1, 2, 3, 5), text_columns=(0,))
+        self.table.setColumnWidth(4, 64)
         self.STACK_LINK_VALUE_COLUMN = len(COLUMNS)
         stack_layout.addWidget(self.table)
 
@@ -281,15 +281,13 @@ class TolstackWindow(
         results_layout = QVBoxLayout(results_tab)
         self.results_layout = results_layout
 
-        self.result_label = QLabel("No results yet.")
-        self.result_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.result_label.setWordWrap(True)
-        self.result_label.setStyleSheet("font-family: monospace; font-size: 12px;")
+        self.result_label = AnalysisSummary("No results yet. Choose the analysis settings and run Analyze.")
         results_layout.addWidget(self.result_label)
 
         self.figure = Figure(figsize=(4, 3))
         style_figure(self.figure)
         self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas.setMinimumHeight(240)
         self.canvas.setVisible(False)
         self.figure.canvas.mpl_connect("button_press_event", self._on_histogram_click)
         self.figure.canvas.mpl_connect("motion_notify_event", self._on_histogram_move)
@@ -338,24 +336,26 @@ class TolstackWindow(
         results_box = QFrame()
         results_box.setFrameShape(QFrame.StyledPanel)
         results_box.setProperty("surface", "card")
-        results_box_layout = QVBoxLayout(results_box)
+        results_box_layout = QGridLayout(results_box)
+        results_box_layout.setColumnStretch(0, 2)
+        results_box_layout.setColumnStretch(1, 3)
+        results_box_layout.setHorizontalSpacing(16)
+        results_box_layout.setVerticalSpacing(10)
         self.measure_result_labels = {}
-        for key, caption in [
+        for row_index, (key, caption) in enumerate([
             ("min", "Min distance:"), ("max", "Max distance:"),
             ("normal", "Normal distance:"), ("xyz", "Offset (X/Y/Z):"),
             ("angle", "Angle:"), ("radius_a", "Diameter A (if circular):"),
             ("radius_b", "Diameter B (if circular):"),
             ("circle_center", "Circle center offset:"),
-        ]:
-            row = QHBoxLayout()
-            caption_label = QLabel(caption)
-            caption_label.setStyleSheet("font-weight: bold;")
-            value_label = QLabel("-")
-            value_label.setWordWrap(True)
+        ]):
+            caption_label = wrap_label(QLabel(caption))
+            caption_label.setProperty("role", "muted")
+            value_label = wrap_label(QLabel("-"))
+            value_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
             self.measure_result_labels[key] = value_label
-            row.addWidget(caption_label)
-            row.addWidget(value_label, stretch=1)
-            results_box_layout.addLayout(row)
+            results_box_layout.addWidget(caption_label, row_index, 0, Qt.AlignTop)
+            results_box_layout.addWidget(value_label, row_index, 1)
         measure_layout.addWidget(results_box)
 
         measure_layout.addSpacing(10)
@@ -411,16 +411,35 @@ class TolstackWindow(
         measure_layout.addStretch(1)
         sidebar.addTab(measure_tab, "Measure")
 
-        # --- Tab 5: Eclipse (LED-hole vs sticker-hole occlusion) ---
+        # --- Tab 5: Projected interference ---
         eclipse_tab = QWidget()
         self.eclipse_tab = eclipse_tab
         eclipse_layout = QVBoxLayout(eclipse_tab)
 
-        eclipse_intro = QLabel(
-            "How much of an LED-hole's light gets blocked by a covering "
-            "sticker hole, given tolerances on both hole diameters and "
-            "their relative position."
-        )
+        mode_row = QFormLayout()
+        mode_row.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        mode_row.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.eclipse_mode_combo = QComboBox()
+        self.eclipse_mode_combo.addItems(["Hole–hole", "Hole–pin"])
+        mode_row.addRow("Mode", self.eclipse_mode_combo)
+        self.eclipse_units_combo = QComboBox()
+        self.eclipse_units_combo.addItems(["mm", "in"])
+        mode_row.addRow("Length units", self.eclipse_units_combo)
+        eclipse_layout.addLayout(mode_row)
+        projection_row = QFormLayout()
+        projection_row.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        projection_row.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.eclipse_reference_axis_combo = QComboBox()
+        self.eclipse_reference_axis_combo.addItems(["X", "Y", "Z"])
+        self.eclipse_reference_axis_combo.setToolTip("World axis projected into circle A's plane. A parallel axis uses a displayed fallback.")
+        projection_row.addRow("CAD reference X axis", self.eclipse_reference_axis_combo)
+        eclipse_layout.addLayout(projection_row)
+        self.eclipse_projection_label = QLabel("Manual inputs · Choose the CAD reference axis before transferring measured circles.")
+        self.eclipse_projection_label.setWordWrap(True)
+        self.eclipse_projection_label.setProperty("role", "muted")
+        eclipse_layout.addWidget(self.eclipse_projection_label)
+        eclipse_intro = QLabel()
+        self.eclipse_intro = eclipse_intro
         eclipse_intro.setWordWrap(True)
         eclipse_intro.setProperty("role", "muted")
         eclipse_layout.addWidget(eclipse_intro)
@@ -431,7 +450,8 @@ class TolstackWindow(
             group.setProperty("surface", "card")
             group_layout = QVBoxLayout(group)
             header_row = QHBoxLayout()
-            header_label = QLabel(caption)
+            header_label = wrap_label(QLabel(caption))
+            setattr(self, f"eclipse_{prefix}_caption", header_label)
             header_label.setStyleSheet("font-weight: bold;")
             header_row.addWidget(header_label, stretch=1)
             if use_measured_btn is not None:
@@ -440,51 +460,57 @@ class TolstackWindow(
                 header_row.addWidget(btn)
             group_layout.addLayout(header_row)
 
-            fields_row = QHBoxLayout()
+            fields_row = ResponsiveFieldGrid(max_columns=4)
             for field_name, field_label, default in [
                 ("nominal", "Nominal:", "0.0"), ("tol_plus", "Tol +:", "0.0"),
                 ("tol_minus", "Tol -:", "0.0"), ("cpk", "Cpk:", ""),
             ]:
-                fields_row.addWidget(QLabel(field_label))
                 field_input = QLineEdit(default)
-                field_input.setMaximumWidth(60)
                 if field_name == "cpk":
                     field_input.setPlaceholderText("uniform")
                 setattr(self, f"eclipse_{prefix}_{field_name}_input", field_input)
-                fields_row.addWidget(field_input)
-            group_layout.addLayout(fields_row)
+                fields_row.add_field(field_label.rstrip(":"), field_input)
+            group_layout.addWidget(fields_row)
             layout.addWidget(group)
 
         add_tolerance_row(
-            eclipse_layout, "handle", "Handle hole diameter",
+            eclipse_layout, "handle", "Hole A diameter",
             use_measured_btn=("Use measured A", self.use_measured_a_for_handle),
         )
         add_tolerance_row(
-            eclipse_layout, "sticker", "Sticker hole diameter",
+            eclipse_layout, "sticker", "Hole B diameter",
             use_measured_btn=("Use measured B", self.use_measured_b_for_sticker),
         )
         add_tolerance_row(eclipse_layout, "offset_x", "Position offset X")
         add_tolerance_row(eclipse_layout, "offset_y", "Position offset Y")
 
-        use_offset_btn = QPushButton("Use measured circle-center offset (-> offset X)")
+        use_offset_btn = QPushButton("Use measured pair and signed offsets")
         use_offset_btn.clicked.connect(self.use_measured_offset)
         eclipse_layout.addWidget(use_offset_btn)
+        self.eclipse_preview = ProjectedPreview()
+        eclipse_layout.addWidget(self.eclipse_preview)
 
         eclipse_layout.addSpacing(10)
-        run_row = QHBoxLayout()
-        run_row.addWidget(QLabel("Iterations:"))
+        run_row = ResponsiveFieldGrid()
         self.eclipse_iterations_input = QSpinBox()
         self.eclipse_iterations_input.setRange(100, 1000000)
         self.eclipse_iterations_input.setSingleStep(1000)
         self.eclipse_iterations_input.setValue(10000)
-        run_row.addWidget(self.eclipse_iterations_input)
-        run_row.addWidget(QLabel("Alarm above %:"))
+        run_row.add_field("Iterations", self.eclipse_iterations_input)
         self.eclipse_threshold_input = QLineEdit("20.0")
-        self.eclipse_threshold_input.setMaximumWidth(60)
-        run_row.addWidget(self.eclipse_threshold_input)
-        eclipse_layout.addLayout(run_row)
+        run_row.add_field("Alarm above (%)", self.eclipse_threshold_input)
+        eclipse_layout.addWidget(run_row)
+        seed_row = QHBoxLayout()
+        seed_row.addWidget(QLabel("Simulation seed:"))
+        self.eclipse_seed_input = QLineEdit()
+        self.eclipse_seed_input.setPlaceholderText("random")
+        self.eclipse_seed_input.setMaximumWidth(130)
+        self.eclipse_seed_input.setToolTip("0–4294967295. Reuse a seed to repeat a run in the same software environment.")
+        seed_row.addWidget(self.eclipse_seed_input)
+        seed_row.addStretch(1)
+        eclipse_layout.addLayout(seed_row)
 
-        run_eclipse_btn = QPushButton("Run eclipse analysis")
+        run_eclipse_btn = QPushButton("Run projected interference analysis")
         run_eclipse_btn.setProperty("role", "primary")
         run_eclipse_btn.clicked.connect(self.run_eclipse_analysis)
         eclipse_layout.addWidget(run_eclipse_btn)
@@ -492,22 +518,33 @@ class TolstackWindow(
         eclipse_results_box = QFrame()
         eclipse_results_box.setFrameShape(QFrame.StyledPanel)
         eclipse_results_box.setProperty("surface", "card")
-        eclipse_results_layout = QVBoxLayout(eclipse_results_box)
+        eclipse_results_layout = QGridLayout(eclipse_results_box)
+        eclipse_results_layout.setColumnStretch(0, 2)
+        eclipse_results_layout.setColumnStretch(1, 3)
+        eclipse_results_layout.setHorizontalSpacing(16)
+        eclipse_results_layout.setVerticalSpacing(10)
         self.eclipse_result_labels = {}
-        for key, caption in [
-            ("mean", "Mean eclipse:"), ("std", "Std dev:"),
-            ("mc_range", "Monte Carlo range:"), ("worst_case", "Worst case:"),
-            ("probability", "Risk:"),
-        ]:
-            row = QHBoxLayout()
-            caption_label = QLabel(caption)
-            caption_label.setStyleSheet("font-weight: bold;")
-            value_label = QLabel("-")
-            value_label.setWordWrap(True)
+        self.eclipse_result_captions = {}
+        self.eclipse_result_rows = {}
+        for row_index, (key, caption) in enumerate([
+            ("mean", "Mean aperture loss:"), ("std", "Area std dev:"),
+            ("mc_range", "Observed area range:"), ("worst_case", "Full-zone area bounds:"),
+            ("probability", "Area threshold risk:"),
+            ("clearance_mean", "Mean radial clearance:"),
+            ("clearance_std", "Clearance std dev:"),
+            ("clearance_range", "Observed clearance range:"),
+            ("clearance_bounds", "Full-zone clearance bounds:"),
+            ("interference", "P(interference):"),
+        ]):
+            caption_label = wrap_label(QLabel(caption))
+            caption_label.setProperty("role", "muted")
+            value_label = wrap_label(QLabel("-"))
+            value_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
             self.eclipse_result_labels[key] = value_label
-            row.addWidget(caption_label)
-            row.addWidget(value_label, stretch=1)
-            eclipse_results_layout.addLayout(row)
+            self.eclipse_result_captions[key] = caption_label
+            self.eclipse_result_rows[key] = (caption_label, value_label)
+            eclipse_results_layout.addWidget(caption_label, row_index, 0, Qt.AlignTop)
+            eclipse_results_layout.addWidget(value_label, row_index, 1)
         eclipse_layout.addWidget(eclipse_results_box)
 
         self.eclipse_figure = Figure(figsize=(4, 3))
@@ -516,6 +553,24 @@ class TolstackWindow(
         self.eclipse_canvas.setMinimumHeight(240)
         self.eclipse_canvas.setVisible(False)
         eclipse_layout.addWidget(self.eclipse_canvas, stretch=1)
+        self.eclipse_mode_combo.currentIndexChanged.connect(self._eclipse_mode_changed)
+        self._eclipse_units = "mm"
+        self._eclipse_projection_frame = None
+        self.eclipse_units_combo.currentTextChanged.connect(self._eclipse_units_changed)
+        self.eclipse_reference_axis_combo.currentTextChanged.connect(self._eclipse_reference_axis_changed)
+        for prefix in ("handle", "sticker", "offset_x", "offset_y"):
+            for field in ("nominal", "tol_plus", "tol_minus", "cpk"):
+                widget = getattr(self, f"eclipse_{prefix}_{field}_input")
+                if field != "cpk":
+                    widget.textChanged.connect(lambda text, control=widget: control.setToolTip(text))
+                widget.textChanged.connect(self._eclipse_clear_results)
+                if field == "nominal":
+                    widget.textChanged.connect(self._eclipse_nominal_changed)
+        self.eclipse_threshold_input.textChanged.connect(self._eclipse_clear_results)
+        self.eclipse_iterations_input.valueChanged.connect(self._eclipse_clear_results)
+        self.eclipse_iterations_input.lineEdit().textChanged.connect(self._eclipse_clear_results)
+        self.eclipse_seed_input.textChanged.connect(self._eclipse_clear_results)
+        self._eclipse_mode_changed()
 
         eclipse_layout.addStretch(1)
 
@@ -523,7 +578,7 @@ class TolstackWindow(
         eclipse_scroll.setWidgetResizable(True)
         eclipse_scroll.setWidget(eclipse_tab)
         eclipse_scroll.setFrameShape(QFrame.NoFrame)
-        sidebar.addTab(eclipse_scroll, "Eclipse")
+        sidebar.addTab(eclipse_scroll, "Projected interference")
 
         # --- Tab 6: GD&T Position ---
         gdt_tab = QWidget()
@@ -574,7 +629,7 @@ class TolstackWindow(
         self.drf_status_label.setWordWrap(True)
         self.drf_status_label.setProperty("role", "muted")
         datum_box_layout.addWidget(self.drf_status_label)
-        inspection_options = QHBoxLayout()
+        inspection_options = QVBoxLayout()
         self.show_datum_faces = QCheckBox("Show A / B / C")
         self.show_datum_faces.setChecked(True)
         self.show_datum_frame = QCheckBox("Show origin + axes")
@@ -610,9 +665,7 @@ class TolstackWindow(
 
         self.pattern_table = QTableWidget(0, len(PATTERN_COLUMNS))
         self.pattern_table.setHorizontalHeaderLabels(PATTERN_COLUMNS)
-        self.pattern_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.pattern_table.horizontalHeader().setMinimumSectionSize(55)
-        self.pattern_table.resizeColumnsToContents()
+        configure_table(self.pattern_table, numeric_columns=range(1, 9), text_columns=(0, 9))
         self.pattern_table.setMinimumHeight(150)
         gdt_layout.addWidget(self.pattern_table)
 
@@ -624,7 +677,7 @@ class TolstackWindow(
         callout_layout.setVerticalSpacing(4)
 
         def add_callout_field(row, col, label_text, widget):
-            label = QLabel(label_text)
+            label = wrap_label(QLabel(label_text))
             label.setProperty("role", "muted")
             cell_layout = QVBoxLayout()
             cell_layout.setContentsMargins(0, 0, 0, 0)
@@ -651,19 +704,16 @@ class TolstackWindow(
         add_callout_field(2, 0, "Feature kind", self.gdt_feature_kind_combo)
         gdt_layout.addWidget(callout_box)
 
-        eval_row = QHBoxLayout()
-        eval_row.addWidget(QLabel("Iterations:"))
+        eval_row = ResponsiveFieldGrid()
         self.gdt_iterations_input = QSpinBox()
         self.gdt_iterations_input.setRange(100, 1000000)
         self.gdt_iterations_input.setSingleStep(1000)
         self.gdt_iterations_input.setValue(10000)
-        eval_row.addWidget(self.gdt_iterations_input)
-        eval_row.addWidget(QLabel("Default Cpk:"))
+        eval_row.add_field("Iterations", self.gdt_iterations_input)
         self.gdt_default_cpk_input = QLineEdit()
         self.gdt_default_cpk_input.setPlaceholderText("uniform")
-        self.gdt_default_cpk_input.setMaximumWidth(60)
-        eval_row.addWidget(self.gdt_default_cpk_input)
-        gdt_layout.addLayout(eval_row)
+        eval_row.add_field("Default Cpk", self.gdt_default_cpk_input)
+        gdt_layout.addWidget(eval_row)
 
         eval_btn_row = QHBoxLayout()
         eval_nominal_btn = QPushButton("Evaluate (as-modeled)")
@@ -681,22 +731,24 @@ class TolstackWindow(
         gdt_results_box = QFrame()
         gdt_results_box.setFrameShape(QFrame.StyledPanel)
         gdt_results_box.setProperty("surface", "card")
-        gdt_results_layout = QVBoxLayout(gdt_results_box)
+        gdt_results_layout = QGridLayout(gdt_results_box)
+        gdt_results_layout.setColumnStretch(0, 2)
+        gdt_results_layout.setColumnStretch(1, 3)
+        gdt_results_layout.setHorizontalSpacing(16)
+        gdt_results_layout.setVerticalSpacing(10)
         self.gdt_result_labels = {}
-        for key, caption in [
+        for row_index, (key, caption) in enumerate([
             ("nominal", "As-modeled:"), ("pattern_fail_rate", "Pattern fail rate:"),
             ("per_feature", "Per-feature fail rate:"),
             ("virtual_condition", "Virtual condition:"),
-        ]:
-            row = QHBoxLayout()
-            caption_label = QLabel(caption)
-            caption_label.setStyleSheet("font-weight: bold;")
-            value_label = QLabel("-")
-            value_label.setWordWrap(True)
+        ]):
+            caption_label = wrap_label(QLabel(caption))
+            caption_label.setProperty("role", "muted")
+            value_label = wrap_label(QLabel("-"))
+            value_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
             self.gdt_result_labels[key] = value_label
-            row.addWidget(caption_label)
-            row.addWidget(value_label, stretch=1)
-            gdt_results_layout.addLayout(row)
+            gdt_results_layout.addWidget(caption_label, row_index, 0, Qt.AlignTop)
+            gdt_results_layout.addWidget(value_label, row_index, 1)
         gdt_layout.addWidget(gdt_results_box)
 
         self.gdt_figure = Figure(figsize=(4, 3))
@@ -719,13 +771,29 @@ class TolstackWindow(
         # users to discover the viewport context menu first.
         workspace_rail = QFrame()
         workspace_rail.setObjectName("workspaceRail")
-        workspace_rail.setFixedWidth(104)
+        workspace_rail.setFixedWidth(144)
         workspace_rail_layout = QVBoxLayout(workspace_rail)
         workspace_rail_layout.setContentsMargins(6, 8, 6, 8)
         workspace_rail_layout.setSpacing(6)
         brand = QLabel("TF")
         brand.setObjectName("brandMark")
         brand.setAlignment(Qt.AlignCenter)
+        brand.setAccessibleName("TolForge")
+        brand.setToolTip("TolForge")
+        logo_path = Path(__file__).resolve().parent / "assets" / "branding" / "tolforge-logo-v1.png"
+        logo = QPixmap(str(logo_path))
+        if not logo.isNull():
+            # Preserve the complete wordmark on its intended light surface.
+            # Render enough pixels for the display's scale without stretching.
+            pixel_ratio = self.devicePixelRatioF()
+            logo = logo.scaled(
+                round(124 * pixel_ratio), round(44 * pixel_ratio),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            )
+            logo.setDevicePixelRatio(pixel_ratio)
+            brand.setPixmap(logo)
+            brand.setProperty("brandArtwork", True)
+            brand.setFixedHeight(56)
         workspace_rail_layout.addWidget(brand)
         workspace_rail_layout.addSpacing(12)
         self.workspace_button_group = QButtonGroup(self)
@@ -744,7 +812,7 @@ class TolstackWindow(
         for key, caption in (
             ("inspect", "Inspect"), ("library", "Library"),
             ("stack", "Stack"), ("results", "Results"),
-            ("measure", "Measure"), ("gdt", "GD&T"), ("study", "Study"), ("eclipse", "Eclipse"),
+            ("measure", "Measure"), ("gdt", "GD&T"), ("study", "Study"), ("eclipse", "Projected interference"),
         ):
             button = QPushButton(caption)
             button.setCheckable(True)
@@ -768,7 +836,7 @@ class TolstackWindow(
             "results": ("Stack analysis", "Choose a method and evaluate your acceptance range."),
             "measure": ("Measure geometry", "Assign two features using the viewport context menu."),
             "gdt": ("GD&T position", "Build a datum reference frame and evaluate your pattern."),
-            "eclipse": ("Hole occlusion", "Evaluate light transmission through overlapping holes."),
+            "eclipse": ("Projected interference", "Evaluate circular aperture loss or hole–pin interference and radial clearance."),
         }
         inspector_shell = QFrame()
         inspector_shell.setObjectName("inspectorShell")
@@ -781,6 +849,7 @@ class TolstackWindow(
         header_layout.setContentsMargins(18, 18, 18, 16)
         self.workspace_title = QLabel()
         self.workspace_title.setProperty("role", "heading")
+        wrap_label(self.workspace_title)
         self.workspace_description = QLabel()
         self.workspace_description.setWordWrap(True)
         self.workspace_description.setProperty("role", "muted")
@@ -794,7 +863,7 @@ class TolstackWindow(
         # status/legend below. Analysis settings are in the Results page.
         # ==================================================================
         viewport_widget = QWidget()
-        viewport_widget.setMinimumWidth(410)
+        viewport_widget.setMinimumWidth(320)
         viewport_column = QVBoxLayout(viewport_widget)
         viewport_column.setContentsMargins(8, 8, 8, 8)
         viewport_column.setSpacing(6)
@@ -854,7 +923,10 @@ class TolstackWindow(
         export_stack_btn = QPushButton("Export stack report")
         export_stack_btn.clicked.connect(self._export_stack_report)
         analysis_settings_layout.addWidget(export_stack_btn, 7, 0, 1, 2)
-        results_layout.insertWidget(0, analysis_settings)
+        settings_heading = QLabel("Analysis settings")
+        settings_heading.setProperty("role", "sectionHeading")
+        results_layout.addWidget(settings_heading)
+        results_layout.addWidget(analysis_settings)
 
         view_controls = QFrame()
         view_controls.setObjectName("viewControls")
@@ -944,6 +1016,10 @@ class TolstackWindow(
         self.workspace_splitter.setStretchFactor(0, 1)
         self.workspace_splitter.setStretchFactor(1, 0)
         self.workspace_splitter.setSizes([740, 450])
+        self._workspace_split_ratios = {}
+        self._active_workspace = None
+        self._applying_workspace_split = False
+        self.workspace_splitter.splitterMoved.connect(self._remember_workspace_split)
         self.workspace_splitter.setToolTip("Drag the divider to resize the viewport and workspace.")
         root_layout.addWidget(self.workspace_splitter, stretch=1)
 
@@ -951,10 +1027,13 @@ class TolstackWindow(
                      measure_tab, gdt_tab, eclipse_tab):
             page.layout().setContentsMargins(16, 16, 16, 16)
             page.layout().setSpacing(10)
+            for label in page.findChildren(QLabel):
+                if label.wordWrap():
+                    wrap_label(label)
 
         # Keep the workspace page identities stable for navigation while
         # allowing the longer measurement/stack tools to fit smaller windows.
-        for page in (stack_tab, measure_tab):
+        for page in (stack_tab, measure_tab, results_tab):
             content = QWidget()
             content.setLayout(page.layout())
             scroll = QScrollArea()
@@ -967,6 +1046,8 @@ class TolstackWindow(
 
         # Seed example row + bank so the GUI doesn't start empty
         self._seed_example()
+        fit_table_columns(self.table)
+        self.table.setColumnWidth(4, 64)
         self._seed_bank()
         self._project_install_menu()
         self._project_update_title()
@@ -1011,6 +1092,36 @@ class TolstackWindow(
         button = self.workspace_buttons.get(name)
         if button is not None:
             button.setChecked(True)
+        self._active_workspace = name
+        self._apply_workspace_split()
+        QTimer.singleShot(0, self._apply_workspace_split)
+
+    def _apply_workspace_split(self):
+        splitter = getattr(self, "workspace_splitter", None)
+        name = getattr(self, "_active_workspace", None)
+        if splitter is None or name is None:
+            return
+        defaults = {"study": 0.64, "stack": 0.60, "gdt": 0.60,
+                    "results": 0.58, "eclipse": 0.52, "measure": 0.42}
+        ratio = self._workspace_split_ratios.get(name, defaults.get(name, 0.39))
+        width = max(1, splitter.width() - splitter.handleWidth())
+        panel_width = round(width * ratio)
+        self._applying_workspace_split = True
+        try:
+            splitter.setSizes([width - panel_width, panel_width])
+        finally:
+            self._applying_workspace_split = False
+
+    def _remember_workspace_split(self, *_):
+        if self._applying_workspace_split or self._active_workspace is None:
+            return
+        sizes = self.workspace_splitter.sizes()
+        if sum(sizes):
+            self._workspace_split_ratios[self._active_workspace] = sizes[1] / sum(sizes)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_workspace_split()
 
     def _run_analysis_and_show_results(self):
         self.run_analysis()

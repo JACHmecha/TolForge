@@ -36,12 +36,23 @@ from math import hypot
 import numpy as np
 
 from .models import finite_number, parse_optional_cpk
+from .analysis import parse_seed
 
 
 def _positive_iterations(iterations: int) -> int:
     if isinstance(iterations, (bool, np.bool_)) or not isinstance(iterations, (int, np.integer)) or iterations <= 0:
         raise ValueError("Iterations must be a positive integer.")
     return int(iterations)
+
+
+def _random_stream(seed=None, rng: np.random.Generator | None = None):
+    """Resolve an explicit generator, retaining the legacy stream by default."""
+    if seed is not None and rng is not None:
+        raise ValueError("Provide either a seed or a random generator, not both.")
+    seed = parse_seed(seed)
+    if rng is not None and not isinstance(rng, np.random.Generator):
+        raise ValueError("rng must be a NumPy Generator.")
+    return rng if rng is not None else (np.random.default_rng(seed) if seed is not None else np.random)
 
 
 def _overlap_fraction(r1: float, r2: float, d: float) -> tuple[float, float]:
@@ -156,21 +167,28 @@ class ToleranceInput:
         finite_number(nominal + plus, f"{self.name}: upper tolerance limit")
         return nominal, plus, minus, parse_optional_cpk(self.cpk, f"{self.name}: Cpk")
 
-    def sample(self, iterations: int, default_cpk: float | None = None) -> np.ndarray:
-        """Use the legacy NumPy stream; Cpk normal draws remain unbounded."""
+    def sample(
+        self, iterations: int, default_cpk: float | None = None, *,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
+        """Sample from an explicit Generator or the legacy NumPy stream.
+
+        Cpk normal draws remain unbounded in either case.
+        """
         iterations = _positive_iterations(iterations)
         nominal, plus, minus, input_cpk = self._validated_values()
         default_cpk = parse_optional_cpk(default_cpk, "Global Cpk")
+        random = _random_stream(rng=rng)
         cpk = input_cpk if input_cpk is not None else default_cpk
         try:
             with np.errstate(over="raise", invalid="raise", divide="raise"):
                 if cpk is None:
-                    values = np.random.uniform(nominal - minus, nominal + plus, iterations)
+                    values = random.uniform(nominal - minus, nominal + plus, iterations)
                 else:
                     # Dividing successively avoids overflowing 3 * large Cpk.
                     sigma_plus = finite_number(plus / 3 / cpk, f"{self.name}: positive sampling deviation")
                     sigma_minus = finite_number(minus / 3 / cpk, f"{self.name}: negative sampling deviation")
-                    z = np.random.standard_normal(iterations)
+                    z = random.standard_normal(iterations)
                     offsets = np.where(z >= 0, z * sigma_plus, z * sigma_minus)
                     values = nominal + offsets
         except (FloatingPointError, OverflowError) as exc:
@@ -241,21 +259,28 @@ class EclipseMonteCarloResult:
 
 
 def run_monte_carlo(
-    inputs: EclipseInputs, iterations: int = 10000, default_cpk: float | None = None
+    inputs: EclipseInputs, iterations: int = 10000, default_cpk: float | None = None, *,
+    seed: int | None = None, rng: np.random.Generator | None = None,
 ) -> EclipseMonteCarloResult:
     """Sample positive aperture diameters without repairing invalid draws.
 
     The specified diameter tolerance ranges must be wholly positive. Cpk
     sampling remains unbounded: any nonpositive draw invalidates the run,
     rather than being clipped to zero or silently sampled again.
+
+    Pass a seed for repeatable studies or a Generator for a caller-owned
+    isolated stream. With neither, existing np.random.seed() callers retain
+    their original sampling sequence.
     """
     iterations = _positive_iterations(iterations)
     default_cpk = parse_optional_cpk(default_cpk, "Global Cpk")
+    random = _random_stream(seed, rng)
     inputs.validate()
-    d_handle = inputs.handle_diameter.sample(iterations, default_cpk)
-    d_sticker = inputs.sticker_diameter.sample(iterations, default_cpk)
-    dx = inputs.offset_x.sample(iterations, default_cpk)
-    dy = inputs.offset_y.sample(iterations, default_cpk)
+    sample_rng = None if random is np.random else random
+    d_handle = inputs.handle_diameter.sample(iterations, default_cpk, rng=sample_rng)
+    d_sticker = inputs.sticker_diameter.sample(iterations, default_cpk, rng=sample_rng)
+    dx = inputs.offset_x.sample(iterations, default_cpk, rng=sample_rng)
+    dy = inputs.offset_y.sample(iterations, default_cpk, rng=sample_rng)
 
     if np.any(d_handle <= 0) or np.any(d_sticker <= 0):
         raise ValueError("Generated diameters must be greater than 0; review the diameter/Cpk assumptions.")

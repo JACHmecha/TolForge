@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QSignalBlocker, QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QLineEdit,
     QMessageBox, QSpinBox, QTableWidgetItem,
@@ -23,10 +23,15 @@ TEXT_WIDGETS = (
     "seed_input", "default_cpk_input", "gdt_default_cpk_input",
     "inspection_drawing_input", "inspection_source_input", "inspection_datum_input",
     "gdt_base_tolerance_input", "gdt_mmc_size_input", "gdt_lmc_size_input",
+    *(f"eclipse_{prefix}_{field}_input" for prefix in ("handle", "sticker", "offset_x", "offset_y")
+      for field in ("nominal", "tol_plus", "tol_minus", "cpk")),
+    "eclipse_seed_input", "eclipse_threshold_input",
 )
-CHOICE_WIDGETS = ("method_combo", "inspection_units_combo", "gdt_modifier_combo", "gdt_feature_kind_combo")
+CHOICE_WIDGETS = ("method_combo", "inspection_units_combo", "gdt_modifier_combo", "gdt_feature_kind_combo",
+                  "eclipse_mode_combo", "eclipse_units_combo", "eclipse_reference_axis_combo")
 CHECK_WIDGETS = ("study_units_check", "inspection_alignment_check", "inspection_scope_check")
-SPIN_WIDGETS = ("iterations_input", "gdt_iterations_input", "range_min_input", "range_max_input")
+SPIN_WIDGETS = ("iterations_input", "gdt_iterations_input", "range_min_input", "range_max_input",
+                "eclipse_iterations_input")
 TABLES = {"stack": "table", "pattern": "pattern_table", "inspection": "inspection_table", "drawing_controls": "characteristic_table"}
 
 
@@ -55,13 +60,19 @@ class ProjectLifecycleMixin:
         self._project_change_timer.setInterval(1000)
         self._project_change_timer.timeout.connect(self._project_note_change)
         for name in TEXT_WIDGETS:
-            getattr(self, name).textChanged.connect(self._project_note_change)
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.textChanged.connect(self._project_note_change)
         for name in CHOICE_WIDGETS:
-            getattr(self, name).currentTextChanged.connect(self._project_note_change)
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.currentTextChanged.connect(self._project_note_change)
         for name in CHECK_WIDGETS:
             getattr(self, name).toggled.connect(self._project_note_change)
         for name in SPIN_WIDGETS:
-            widget = getattr(self, name)
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
             widget.valueChanged.connect(self._project_note_change)
             widget.lineEdit().textChanged.connect(self._project_note_change)
         for name in TABLES.values():
@@ -118,13 +129,19 @@ class ProjectLifecycleMixin:
     def _project_raw_ui(self):
         widgets = {}
         for name in TEXT_WIDGETS:
-            widgets[name] = {"kind": "text", "text": getattr(self, name).text()}
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widgets[name] = {"kind": "text", "text": widget.text()}
         for name in CHOICE_WIDGETS:
-            widgets[name] = {"kind": "choice", "text": getattr(self, name).currentText()}
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widgets[name] = {"kind": "choice", "text": widget.currentText()}
         for name in CHECK_WIDGETS:
             widgets[name] = {"kind": "check", "value": getattr(self, name).isChecked()}
         for name in SPIN_WIDGETS:
-            widget = getattr(self, name)
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
             widgets[name] = {"kind": "spin", "text": widget.lineEdit().text(), "value": widget.value()}
         datums = {}
         for slot, entry in self._datum_slot.items():
@@ -136,8 +153,12 @@ class ProjectLifecycleMixin:
                     "description": entry.get("description", ""), "kind": entry.get("kind", "plane"),
                     "feature_id": entry.get("feature_id"), "datum_ref_id": entry.get("datum_ref_id"),
                 }
-        return {"widgets": widgets, "tables": {name: self._project_table_snapshot(name) for name in TABLES},
-                "datums": datums, "inspection_source_files": deepcopy(getattr(self, "_inspection_source_files", []))}
+        ui = {"widgets": widgets, "tables": {name: self._project_table_snapshot(name) for name in TABLES},
+              "datums": datums, "inspection_source_files": deepcopy(getattr(self, "_inspection_source_files", []))}
+        projection_snapshot = getattr(self, "_eclipse_projection_snapshot", None)
+        if projection_snapshot is not None:
+            ui["projected_interference_projection"] = deepcopy(projection_snapshot())
+        return ui
 
     def _project_state_snapshot(self):
         domain_error = None
@@ -221,6 +242,9 @@ class ProjectLifecycleMixin:
     def _project_invalidate_all_reports(self):
         self._project_invalidate_context_reports()
         self._invalidate_inspection()
+        clear_projected = getattr(self, "_eclipse_clear_results", None)
+        if clear_projected is not None:
+            clear_projected()
 
     def _project_capture_raw_geometry_before_load(self):
         self._project_pending_raw_geometry = {
@@ -370,17 +394,31 @@ class ProjectLifecycleMixin:
             self._entity_by_feature_id = {}
             self._step_entity_info = {}
             self._study_restore()
+            self._project_restore_projected_interference()
             for name, state in ui["widgets"].items():
                 widget = getattr(self, name)
-                if state["kind"] == "text":
-                    widget.setText(state["text"])
-                elif state["kind"] == "choice":
-                    widget.setCurrentText(state["text"])
-                elif state["kind"] == "check":
-                    widget.setChecked(state["value"])
-                else:
-                    widget.setValue(state["value"])
-                    widget.lineEdit().setText(state["text"])
+                # Raw module values already use the restored unit choice. Do
+                # not convert them again through unit-selector callbacks.
+                blocker = QSignalBlocker(widget) if name.startswith("eclipse_") else None
+                try:
+                    if state["kind"] == "text":
+                        widget.setText(state["text"])
+                    elif state["kind"] == "choice":
+                        widget.setCurrentText(state["text"])
+                    elif state["kind"] == "check":
+                        widget.setChecked(state["value"])
+                    else:
+                        widget.setValue(state["value"])
+                        widget.lineEdit().setText(state["text"])
+                finally:
+                    if blocker is not None:
+                        blocker.unblock()
+            restore_projection = getattr(self, "_eclipse_restore_projection", None)
+            if restore_projection is not None:
+                restore_projection(deepcopy(ui.get("projected_interference_projection")))
+            refresh_mode = getattr(self, "_eclipse_mode_changed", None)
+            if refresh_mode is not None:
+                refresh_mode()
             for name, rows in ui["tables"].items():
                 self._project_restore_draft_table(name, rows)
             self._inspection_source_files = deepcopy(ui.get("inspection_source_files", []))
