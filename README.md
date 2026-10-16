@@ -28,6 +28,8 @@ It uses PySide6, NumPy, Matplotlib, COMPAS, and OpenCASCADE.
   identity, persistence, and the solver boundary.
 - [Development guide](docs/development.md): dependencies, architecture, tests,
   packaging, and troubleshooting.
+- [UX feedback pilot](docs/ux-feedback.md): repeatable scalar workflows,
+  screenshots, independent checks and a local/CI feedback report.
 - [Roadmap](ROADMAP.md): implemented capabilities and remaining work.
 - [GD&T icon library](Code/gui/assets/icons/gdt/README.md): asset conventions.
 

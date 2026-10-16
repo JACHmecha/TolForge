@@ -23,3 +23,7 @@ dist/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Synthetic UX pipeline evidence (unique reports and screenshots per run)
+artifacts/ux-feedback/
+ux-evidence/
