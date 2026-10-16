@@ -84,11 +84,12 @@ class StepViewerMixin:
         self._step_pending_load_path = None
         self._step_pending_start_path = None
         self._reset_surface_previews()
+        self._step_entity_info = {}
+        self._reset_step_selection()
         self.step_status_label.setText("No STEP file loaded yet.")
         if self._step_preview_renderer is not None:
             viewport = CompasViewportAdapter(self._step_preview_renderer)
             viewport.clear()
-            self._step_entity_info = {}
             viewport.refresh()
             QApplication.processEvents()
         else:
@@ -433,6 +434,7 @@ class StepViewerMixin:
             viewport.clear()
 
             self._step_entity_info = {}
+            self._reset_step_selection()
 
             # Faces are colored per-solid (cycling through this palette) so
             # separate bodies in an assembly are easy to tell apart at a
@@ -655,9 +657,45 @@ class StepViewerMixin:
         return obj
 
     def _resolve_entity_info_for_renderer(self, obj):
-        if obj is None:
-            return None
-        return self._step_entity_info.get(id(obj)) if getattr(self, "_step_entity_info", None) is not None else None
+        """Select the context-menu target without consuming an armed tool.
+
+        Context actions keep targeting the raw face/edge/vertex, independently
+        of the left-click filter, as before. Their inspector and highlight now
+        refer to that same target even if the menu is subsequently dismissed.
+        """
+        return self._commit_step_selection(obj)
+
+    def _reset_step_selection(self):
+        """Discard logical references after the displayed geometry is cleared."""
+        self._selected_entity_info = None
+        self._pick_markers = []
+        if hasattr(self, "_update_selection_inspector"):
+            self._update_selection_inspector(None)
+
+    def _commit_step_selection(self, obj):
+        """Commit one accepted logical selection and its complete visual target.
+
+        Only scene faces are highlighted for a synthesized solid marker; the
+        marker remains the existing logical input to measurement/datum/link
+        tools and never becomes an extra scene object.
+        """
+        info = self._step_entity_info.get(id(obj)) if obj is not None else None
+        self._selected_entity_info = info
+        renderer = getattr(self, "_step_preview_renderer", None)
+        if renderer is not None:
+            viewport = CompasViewportAdapter(renderer)
+            if info is not None and info["type"] == "solid":
+                selected = [
+                    candidate for candidate in viewport.objects
+                    if (self._step_entity_info.get(id(candidate), {}).get("type") == "face"
+                        and self._step_entity_info[id(candidate)].get("solid_index") == info["index"])
+                ]
+            else:
+                selected = () if info is None else (obj,)
+            viewport.select_many(selected)
+        if hasattr(self, "_update_selection_inspector"):
+            self._update_selection_inspector(info)
+        return info
 
     def _on_step_entity_picked(self, obj):
         """Show info about whichever face/edge/vertex/solid was just
@@ -675,6 +713,8 @@ class StepViewerMixin:
         if obj is _PICK_REJECTED:
             return
 
+        info = self._commit_step_selection(obj)
+
         if getattr(self, "_measure_on_pick", None) is not None and self._measure_on_pick(obj):
             return
         if getattr(self, "_datum_on_pick", None) is not None and self._datum_on_pick(obj):
@@ -682,10 +722,6 @@ class StepViewerMixin:
         if getattr(self, "_stack_link_on_pick", None) is not None and self._stack_link_on_pick(obj):
             return
 
-        info = self._step_entity_info.get(id(obj)) if obj is not None else None
-        self._selected_entity_info = info
-        if hasattr(self, "_update_selection_inspector"):
-            self._update_selection_inspector(info)
         if info is None:
             self.step_status_label.setText("Selection cleared.")
             return

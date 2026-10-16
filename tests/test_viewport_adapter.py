@@ -63,6 +63,23 @@ def test_buffer_rebuild_releases_context_before_scheduling_repaint():
     assert renderer.events == ["acquire", "rebuild", "release", "update"]
 
 
+def test_multi_selection_matches_scene_objects_by_identity_and_can_clear():
+    renderer = FakeRenderer()
+    adapter = CompasViewportAdapter(renderer)
+    first = adapter.add("face")
+    second = adapter.add("face")
+    edge = adapter.add("edge")
+
+    adapter.select(first)
+    assert first.is_selected and not second.is_selected
+    adapter.select_many((first, second))
+
+    assert first.is_selected and second.is_selected and not edge.is_selected
+    adapter.select(None)
+    assert not any(obj.is_selected for obj in adapter.objects)
+    assert renderer.events == ["update", "update", "update"]
+
+
 def test_failed_buffer_rebuild_releases_gl_context():
     renderer = FakeRenderer()
     renderer.fail_rebuild = True

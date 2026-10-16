@@ -195,7 +195,7 @@ QPushButton[role="primary"]:hover {{
     background: {COLORS['accent_hover']};
     border-color: {COLORS['accent_hover']};
 }}
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit {{
     min-height: 27px;
     padding: 2px 7px;
     color: {COLORS['text']};
@@ -204,7 +204,7 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     border-radius: 5px;
     selection-background-color: #2E617E;
 }}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{
     border: 1px solid {COLORS['accent']};
 }}
 QComboBox::drop-down {{

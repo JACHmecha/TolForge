@@ -8,9 +8,12 @@ The left rail selects Inspect, Study, Library, Stack, Results, Measure, GD&T, or
 Projected interference. The 3D viewport stays visible. Drag the divider to widen the workspace;
 Stack, Measure, and the longer analysis panels scroll as needed.
 
-The viewport toolbar contains Load STEP, Cancel load, Clear, and Analyze. Mesh quality and
-selection filters are immediately below it. Analysis method, Cpk, iterations,
-and acceptance bounds are in Results. Status messages appear below the viewport.
+The viewport toolbar contains Load STEP, Cancel load, and Clear. Mesh quality and
+selection filters are immediately below it. **Analyze stack** is available in
+Stack and Results, beside the current method. Analysis method, Cpk, iterations,
+and acceptance bounds are in Results. Workspace headers identify the project
+units. Status messages appear below the viewport; **Details…** opens the full,
+copyable message when it is long or has several lines.
 
 ## Recommended study workflow
 
@@ -175,9 +178,15 @@ Stack columns include Name, Nominal, Tol +, Tol -, +/-, Cpk, and 3D Value.
 Use positive tolerance magnitudes and choose the contribution sign separately.
 The sign control includes both a symbol and a color.
 
-Choose an analysis method in Results and press Analyze. Worst Case and RSS
+Choose an analysis method in Results and press **Analyze stack**. Worst Case and RSS
 report limits; Monte Carlo provides a histogram and acceptance statistics.
 Drag its interval boundaries or edit acceptance bounds to update the statistics.
+
+Stack headings identify the units of current inputs. Result cards and histogram
+axes use the units captured when that report was evaluated. Very small nonzero
+lengths use scientific notation instead of appearing as zero; hover a length
+value or expand **Full precision values** to inspect and copy its full precision.
+These presentation choices do not convert or change the engineering values.
 
 Name the functional response and set its acceptance interval in Results. These
 bounds are separate from the fit assessment at zero clearance. Enter a **Study

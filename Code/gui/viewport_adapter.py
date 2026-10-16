@@ -29,8 +29,13 @@ class CompasViewportAdapter:
 
     def select(self, selected) -> None:
         """Apply a single selection to the currently registered scene objects."""
+        self.select_many(() if selected is None else (selected,))
+
+    def select_many(self, selected) -> None:
+        """Highlight an accepted entity, including all faces of a solid."""
+        selected_ids = {id(obj) for obj in selected}
         for obj in self.objects:
-            obj.is_selected = obj is selected
+            obj.is_selected = id(obj) in selected_ids
         self.refresh()
 
     @contextmanager

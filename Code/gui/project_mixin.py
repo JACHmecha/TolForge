@@ -265,6 +265,9 @@ class ProjectMixin(FeatureRelinkingMixin, ProjectLifecycleMixin):
         suffix = Path(self._project_path).name if self._project_path else "Unsaved"
         changed = " *" if getattr(self, "_project_dirty", False) else ""
         self.setWindowTitle(f"Tol-Forge — {self.project.name}{changed} [{suffix}]")
+        update_units = getattr(self, "_update_units_presentation", None)
+        if update_units is not None:
+            update_units()
 
     # ------------------------------------------------------------------
     # STEP source and stable feature identities

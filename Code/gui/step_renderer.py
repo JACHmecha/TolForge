@@ -70,8 +70,9 @@ try:
             self._last_pos = None
             self._dragged_distance = 0.0
             # Set by TolstackWindow after construction. Called with the
-            # picked SceneObject (or None if empty space was clicked) when
-            # a left-click (not a left-drag/rotate) is released.
+            # raw SceneObject (or None if empty space was clicked) when a
+            # left-click (not a left-drag/rotate) is released. The owner
+            # validates its filter and commits selection/highlighting.
             self.on_pick = None
             self.datum_inspection_objects = []
 
@@ -143,9 +144,6 @@ try:
             import numpy as np
 
             try:
-                for obj in list(self.scene.instance_colors.values()):
-                    obj.is_selected = False
-
                 colors = self.read_instance_color((x, y, x, y))
                 colors = np.array(colors).reshape(-1, np.array(colors).shape[-1])
                 unique_colors = np.unique(colors, axis=0)
@@ -157,10 +155,6 @@ try:
                     if candidate is not None:
                         selected = candidate
                         break
-
-                if selected is not None:
-                    selected.is_selected = True
-                self.update()
 
                 if self.on_pick is not None:
                     self.on_pick(selected)

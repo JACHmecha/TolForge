@@ -6,10 +6,12 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from gui.app import TolstackWindow
 from gui.layout_presentation import WrappedCheckBox
+from tolstack.domain import Units
 
 
 @pytest.fixture
@@ -122,3 +124,67 @@ def test_wrapping_checkbox_keeps_text_click_and_keyboard_behavior(desktop):
     checkbox.setText(original_text + " — reviewed")
     assert checkbox.text().endswith(" — reviewed")
     assert checkbox._caption.text() == checkbox.text()
+
+
+def test_project_units_refresh_headers_without_editing_engineering_values(desktop):
+    app, window = desktop
+    window._add_table_row("Small offset", 0.000000123456789, 0.00000001, 0.00000002, "+", None)
+    cell = window.table.item(0, 0)
+    cell.setData(Qt.UserRole, "stable-dimension")
+    before = window.table.model().rows_snapshot()
+    changed = QSignalSpy(window.table.model().dataChanged)
+    window.project.units = Units(length="in")
+    window._project_update_title()
+    settle(app)
+    assert "length: in" in window.project_units_label.text()
+    for column in (1, 2, 3, 6):
+        assert "[in]" in window.table.model().headerData(column, Qt.Horizontal)
+    assert "[in]" in window.acceptance_min_label.text()
+    assert "[in]" in window.acceptance_max_label.text()
+    assert window.table.model().rows_snapshot() == before
+    assert window.table.item(0, 0).data(Qt.UserRole) == "stable-dimension"
+    assert changed.count() == 0
+    window.new_project()
+    assert "length: mm" in window.project_units_label.text()
+    assert "[mm]" in window.table.model().headerData(1, Qt.Horizontal)
+
+
+def test_stack_analysis_actions_have_explicit_scope_and_preserve_other_workspaces(desktop, monkeypatch):
+    app, window = desktop
+    calls = []
+    monkeypatch.setattr(window, "run_analysis", lambda: calls.append(window.method_combo.currentText()))
+    window.method_combo.setCurrentText("monte_carlo")
+    for name in ("inspect", "gdt", "study", "eclipse", "measure", "library"):
+        window._show_workspace(name)
+        settle(app)
+        assert not window.stack_analyze_button.isVisible()
+        assert not window.results_analyze_button.isVisible()
+    window._show_workspace("stack")
+    settle(app)
+    assert window.stack_analyze_button.isVisible()
+    assert "Monte Carlo" in window.stack_analyze_button.accessibleName()
+    QTest.mouseClick(window.stack_analyze_button, Qt.LeftButton)
+    settle(app)
+    assert calls == ["monte_carlo"]
+    assert window.sidebar.currentWidget() is window.results_tab
+    assert window.results_analyze_button.isVisible()
+    QTest.mouseClick(window.results_analyze_button, Qt.LeftButton)
+    assert calls == ["monte_carlo", "monte_carlo"]
+
+
+def test_viewport_status_details_stay_reachable_in_the_actual_window(desktop):
+    app, window = desktop
+    window.resize(1024, 768)
+    window._show_workspace("stack")
+    message = "Loaded: part.step\nSolids: 2  Faces: 18\nReview saved CAD links before evaluation."
+    window.step_status_label.setText(message)
+    window.step_load_progress.setVisible(True)
+    settle(app)
+    assert window.step_status_label.details_button.isVisible()
+    assert window.step_status_label.summary_label.text()
+    assert window.step_load_progress.geometry().right() < window.step_load_progress.parentWidget().width()
+    QTest.mouseClick(window.step_status_label.details_button, Qt.LeftButton)
+    settle(app)
+    assert window.step_status_label._details_text.toPlainText() == message
+    assert window.step_status_label.text() == message
+    window.step_status_label._details_dialog.close()

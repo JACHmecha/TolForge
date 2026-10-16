@@ -10,6 +10,7 @@ from tolstack.analysis import (
     parse_seed, update_report_limits,
 )
 from gui.theme import COLORS, style_axes
+from gui.quantity_presentation import full_length, report_length_unit
 from tolstack.reporting import project_report_context
 
 
@@ -82,7 +83,16 @@ class AnalysisMixin:
             return
         self._interval_lines[0].set_xdata([self.interval_min_value, self.interval_min_value])
         self._interval_lines[1].set_xdata([self.interval_max_value, self.interval_max_value])
+        self._update_histogram_precision_tooltip()
         self._histogram_ax.figure.canvas.draw_idle()
+
+    def _update_histogram_precision_tooltip(self):
+        if hasattr(self.canvas, "setToolTip"):
+            unit = report_length_unit(getattr(self, "_last_analysis_report", None))
+            self.canvas.setToolTip(
+                f"Acceptance min: {full_length(self.interval_min_value, unit)}\n"
+                f"Acceptance max: {full_length(self.interval_max_value, unit)}"
+            )
 
     def _refresh_interval_summary(self, samples):
         if samples is None or self._last_monte_carlo_payload is None:
@@ -291,8 +301,12 @@ class AnalysisMixin:
         ax = self.figure.add_subplot(111)
         ax.hist(samples, bins=50, color=COLORS["accent"], edgecolor=COLORS["panel"])
         ax.set_title("Monte Carlo distribution")
-        ax.set_xlabel("Value")
-        ax.set_ylabel("Frequency")
+        report = getattr(self, "_last_analysis_report", None)
+        unit = report_length_unit(report)
+        response = report.settings.response_name if report is not None else "Response"
+        ax.set_xlabel(f"{response} [{unit if unit is not None else 'units unspecified'}]")
+        ax.set_ylabel("Sample count")
+        self._update_histogram_precision_tooltip()
         self._histogram_ax = ax
         self._interval_lines = [
             ax.axvline(self.interval_min_value, color=COLORS["accent"], linestyle="--", linewidth=1.8),

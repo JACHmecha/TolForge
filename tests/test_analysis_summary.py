@@ -3,7 +3,8 @@
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from gui.analysis_mixin import AnalysisMixin
 from gui.analysis_summary import AnalysisSummary
@@ -123,3 +124,40 @@ def test_long_details_wrap_within_narrow_results_pane(summary):
         if label.isVisible():
             assert label.hasHeightForWidth()
             assert label.height() >= label.heightForWidth(label.width())
+
+
+@pytest.mark.parametrize("unit", ["mm", "in"])
+def test_length_cards_preserve_snapshot_units_and_full_precision(summary, unit):
+    evaluated = analyze_stack(
+        Stack([Dimension("Small gap", 0.000004123456789, 0.0000001, 0.0000002)]),
+        AnalysisSettings(lower_limit=0, upper_limit=0.00001),
+        report_context={"units": {"length": unit, "angle": "deg"}},
+    )
+    exported_before = evaluated.to_dict()
+    summary.set_report(evaluated, "Unchanged legacy text")
+    assert f"Length units: {unit}" in displayed_text(summary)
+    assert f"4.12346e-06 {unit}" in displayed_text(summary)
+    label = next(label for label in summary.findChildren(QLabel)
+                 if label.text() == f"4.12346e-06 {unit}")
+    assert label.toolTip() == f"Full precision: 4.123456789e-06 {unit}"
+    details = summary.findChild(QLabel, "fullPrecisionValues")
+    assert details.isHidden()
+    toggle = next(button for button in summary.findChildren(QPushButton)
+                  if button.text() == "Full precision values")
+    toggle.setChecked(True)
+    assert not details.isHidden()
+    assert f"Nominal: 4.123456789e-06 {unit}" in details.text()
+    assert details.textInteractionFlags() & Qt.TextSelectableByKeyboard
+    assert summary.text() == "Unchanged legacy text"
+    assert evaluated.to_dict() == exported_before
+
+
+def test_unspecified_units_remain_explicit_and_counts_are_unitless(summary):
+    evaluated = report("monte_carlo", iterations=100, seed=7, lower_limit=0, upper_limit=2)
+    summary.set_report(evaluated, "Legacy text")
+    assert "Length units: unspecified" in displayed_text(summary)
+    captions = {label.text(): label for label in summary.findChildren(QLabel)}
+    assert "100 / 100" in captions
+    assert "100.00%" in captions
+    assert "0.0" in captions  # observed PPM
+    assert "mm" not in summary.findChild(QLabel, "fullPrecisionValues").text()

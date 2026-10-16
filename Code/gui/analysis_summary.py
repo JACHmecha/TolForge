@@ -6,9 +6,10 @@ not infer outcomes or numbers from that summary.
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout
 
 from tolstack.analysis import AnalysisReport
+from gui.quantity_presentation import display_length, full_length, report_length_unit
 
 
 class AnalysisSummary(QFrame):
@@ -39,6 +40,8 @@ class AnalysisSummary(QFrame):
     def set_report(self, report: AnalysisReport, plain_text: str):
         self._plain_text = plain_text
         self._report = report
+        self._length_unit = report_length_unit(report)
+        self._precision_values = []
         self._clear()
         self._layout.addWidget(self._label(report.settings.response_name, role="heading"))
         method = report.settings.method
@@ -51,10 +54,13 @@ class AnalysisSummary(QFrame):
         else:
             description = "RSS estimated band" if method == "rss" else "Worst-case analysis"
         self._layout.addWidget(self._label(description, role="muted"))
+        units = self._length_unit if self._length_unit is not None else "unspecified"
+        self._layout.addWidget(self._label(f"Length units: {units}", role="muted"))
         self._show_acceptance(report)
         self._show_metrics(report)
         self._show_fit(report.fit_at_zero)
         self._show_contributors(report.contributions)
+        self._show_precision_details()
 
     def _clear(self):
         while self._layout.count():
@@ -72,7 +78,7 @@ class AnalysisSummary(QFrame):
         label.setMinimumWidth(0)
         label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         if role is not None:
             label.setProperty("role", role)
         return label
@@ -91,10 +97,34 @@ class AnalysisSummary(QFrame):
         self._layout.addWidget(card)
         return grid
 
-    def _row(self, grid, caption, value, *, role=None):
+    def _row(self, grid, caption, value, *, role=None, tooltip=None):
         row = grid.rowCount()
         grid.addWidget(self._label(caption, role="muted"), row, 0)
-        grid.addWidget(self._label(value, role=role, alignment=Qt.AlignRight | Qt.AlignTop), row, 1)
+        value_label = self._label(value, role=role, alignment=Qt.AlignRight | Qt.AlignTop)
+        if tooltip is not None:
+            value_label.setToolTip(tooltip)
+        grid.addWidget(value_label, row, 1)
+
+    def _quantity_row(self, grid, caption, value, *, role=None, signed=False):
+        if value is None:
+            self._row(grid, caption, "unbounded", role=role)
+            return
+        precise = full_length(value, self._length_unit, signed=signed)
+        self._precision_values.append(f"{caption}: {precise}")
+        self._row(
+            grid, caption, display_length(value, self._length_unit, signed=signed),
+            role=role, tooltip=f"Full precision: {precise}",
+        )
+
+    def _show_precision_details(self):
+        toggle = QPushButton("Full precision values", self)
+        toggle.setCheckable(True)
+        details = self._label("\n".join(self._precision_values), role="muted")
+        details.setObjectName("fullPrecisionValues")
+        details.setVisible(False)
+        toggle.toggled.connect(details.setVisible)
+        self._layout.addWidget(toggle)
+        self._layout.addWidget(details)
 
     def _note(self, grid, text, *, role="muted"):
         grid.addWidget(self._label(text, role=role), grid.rowCount(), 0, 1, 2)
@@ -102,11 +132,9 @@ class AnalysisSummary(QFrame):
     def _show_acceptance(self, report):
         grid = self._card("Functional acceptance")
         acceptance = report.acceptance
-        lower = f"{acceptance.lower_limit:.4f}" if acceptance.lower_limit is not None else "unbounded"
-        upper = f"{acceptance.upper_limit:.4f}" if acceptance.upper_limit is not None else "unbounded"
         self._note(grid, acceptance.status.replace("_", " ").capitalize(), role="metric")
-        self._row(grid, "Lower limit", lower)
-        self._row(grid, "Upper limit", upper)
+        self._quantity_row(grid, "Lower limit", acceptance.lower_limit)
+        self._quantity_row(grid, "Upper limit", acceptance.upper_limit)
         if acceptance.rejected_count is not None:
             accepted = acceptance.sample_count - acceptance.rejected_count
             self._row(grid, "Sample yield", f"{100 * (1 - acceptance.rejection_probability):.2f}%", role="metric")
@@ -121,21 +149,21 @@ class AnalysisSummary(QFrame):
         result = report.result
         if report.settings.method == "monte_carlo":
             grid = self._card("Sample distribution")
-            self._row(grid, "Mean", f"{result.mean:.4f}")
-            self._row(grid, "Standard deviation", f"{result.std_dev:.4f}")
+            self._quantity_row(grid, "Mean", result.mean)
+            self._quantity_row(grid, "Standard deviation", result.std_dev)
         else:
             grid = self._card("Response range")
-            self._row(grid, "Nominal", f"{result.nominal:.4f}", role="metric")
-            self._row(grid, "Minimum", f"{result.lower_limit:.4f}")
-            self._row(grid, "Maximum", f"{result.upper_limit:.4f}")
-            self._row(grid, "+Tolerance", f"{result.upper_limit - result.nominal:.4f}")
-            self._row(grid, "−Tolerance", f"{result.nominal - result.lower_limit:.4f}")
+            self._quantity_row(grid, "Nominal", result.nominal, role="metric")
+            self._quantity_row(grid, "Minimum", result.lower_limit)
+            self._quantity_row(grid, "Maximum", result.upper_limit)
+            self._quantity_row(grid, "+Tolerance", result.upper_limit - result.nominal)
+            self._quantity_row(grid, "−Tolerance", result.nominal - result.lower_limit)
 
     def _show_fit(self, fit):
         grid = self._card("Separate zero-clearance fit check")
         self._row(grid, "Fit", fit.verdict.upper())
-        self._row(grid, "Minimum margin", f"{fit.margin_min:+.4f}")
-        self._row(grid, "Maximum margin", f"{fit.margin_max:+.4f}")
+        self._quantity_row(grid, "Minimum margin", fit.margin_min, signed=True)
+        self._quantity_row(grid, "Maximum margin", fit.margin_max, signed=True)
         if fit.interference_probability is not None:
             self._row(grid, "P(interference)", f"{fit.interference_probability * 100:.2f}%")
 

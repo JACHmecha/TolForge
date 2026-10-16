@@ -2,8 +2,8 @@
 
 A left navigation rail selects Inspect, Library, Stack, Results, Measure,
 GD&T, and Projected interference. The main STEP viewport and right workspace panel are
-resizable. Load/Clear/Analyze controls stay above the viewport; analysis
-settings live in Results. Mixins implement analysis, measurement, linked
+resizable. Load/Clear controls stay above the viewport; stack analysis actions
+live in Stack and Results. Mixins implement analysis, measurement, linked
 previews, datum inspection, and project persistence.
 
 Run from the repository root with: python Code/gui/app.py
@@ -52,6 +52,7 @@ from gui.projected_preview import ProjectedPreview
 from gui.analysis_summary import AnalysisSummary
 from gui.layout_presentation import ResponsiveFieldGrid, wrap_label
 from gui.table_presentation import configure_table, fit_table_columns
+from gui.viewport_status import ViewportStatus
 
 COLUMNS = ["Name", "Nominal", "Tol +", "Tol -", "+/-", "Cpk"]
 
@@ -82,6 +83,8 @@ class TolstackWindow(
         self._step_load_generation = 0
         self._pick_filter = "any"
         self._pick_markers = []
+        self._stack_action_controls = []
+        self._displayed_project_units = None
         self._project_init_state()
         self._measure_init_state()
         self._gdt_init_state()
@@ -179,6 +182,9 @@ class TolstackWindow(
         stack_tab = QWidget()
         self.stack_tab = stack_tab
         stack_layout = QVBoxLayout(stack_tab)
+
+        stack_actions, self.stack_analyze_button = self._create_stack_analysis_actions()
+        stack_layout.addWidget(stack_actions)
 
         self.table = StackTableView(0, len(COLUMNS) + 1)  # +1 for the 3D-link Value column
         self.table.setHorizontalHeaderLabels(COLUMNS + ["3D Value"])
@@ -281,7 +287,10 @@ class TolstackWindow(
         results_layout = QVBoxLayout(results_tab)
         self.results_layout = results_layout
 
-        self.result_label = AnalysisSummary("No results yet. Choose the analysis settings and run Analyze.")
+        results_actions, self.results_analyze_button = self._create_stack_analysis_actions()
+        results_layout.addWidget(results_actions)
+
+        self.result_label = AnalysisSummary("No results yet. Choose the analysis settings and run Analyze stack.")
         results_layout.addWidget(self.result_label)
 
         self.figure = Figure(figsize=(4, 3))
@@ -855,11 +864,17 @@ class TolstackWindow(
         self.workspace_description.setProperty("role", "muted")
         header_layout.addWidget(self.workspace_title)
         header_layout.addWidget(self.workspace_description)
+        self.project_units_label = wrap_label(QLabel())
+        self.project_units_label.setObjectName("projectUnits")
+        self.project_units_label.setProperty("role", "status")
+        self.project_units_label.setTextFormat(Qt.PlainText)
+        self.project_units_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        header_layout.addWidget(self.project_units_label)
         shell_layout.addWidget(panel_header)
         shell_layout.addWidget(sidebar, 1)
 
         # ==================================================================
-        # Main viewport column, with load/clear/analyze controls above and
+        # Main viewport column, with load/clear controls above and
         # status/legend below. Analysis settings are in the Results page.
         # ==================================================================
         viewport_widget = QWidget()
@@ -877,6 +892,8 @@ class TolstackWindow(
 
         self.method_combo = QComboBox()
         self.method_combo.addItems(["worst_case", "rss", "monte_carlo"])
+        self.method_combo.currentTextChanged.connect(self._update_stack_analysis_actions)
+        self._update_stack_analysis_actions()
         self.default_cpk_input = QLineEdit()
         self.default_cpk_input.setPlaceholderText("empty = uniform")
         self.default_cpk_input.setMaximumWidth(90)
@@ -908,9 +925,11 @@ class TolstackWindow(
         analysis_settings_layout.addWidget(self.default_cpk_input, 1, 1)
         analysis_settings_layout.addWidget(QLabel("Iterations"), 2, 0)
         analysis_settings_layout.addWidget(self.iterations_input, 2, 1)
-        analysis_settings_layout.addWidget(QLabel("Acceptance min"), 3, 0)
+        self.acceptance_min_label = wrap_label(QLabel("Acceptance min"))
+        analysis_settings_layout.addWidget(self.acceptance_min_label, 3, 0)
         analysis_settings_layout.addWidget(self.range_min_input, 3, 1)
-        analysis_settings_layout.addWidget(QLabel("Acceptance max"), 4, 0)
+        self.acceptance_max_label = wrap_label(QLabel("Acceptance max"))
+        analysis_settings_layout.addWidget(self.acceptance_max_label, 4, 0)
         analysis_settings_layout.addWidget(self.range_max_input, 4, 1)
         self.response_name_input = QLineEdit("Functional response")
         self.seed_input = QLineEdit()
@@ -972,11 +991,6 @@ class TolstackWindow(
         toolbar_layout.addWidget(clear_step_btn)
         toolbar_layout.addStretch(1)
 
-        run_btn = QPushButton("Analyze")
-        run_btn.setProperty("role", "primary")
-        run_btn.clicked.connect(self._run_analysis_and_show_results)
-        toolbar_layout.addWidget(run_btn)
-
         viewport_column.addWidget(toolbar)
         viewport_column.addWidget(view_controls)
 
@@ -993,12 +1007,10 @@ class TolstackWindow(
         # --- Slim status strip (below the viewport) ---
         status_strip = QFrame()
         status_strip.setObjectName("statusStrip")
-        status_strip.setMaximumHeight(28)
+        status_strip.setMinimumHeight(28)
         status_strip_layout = QHBoxLayout(status_strip)
         status_strip_layout.setContentsMargins(4, 2, 4, 2)
-        self.step_status_label = QLabel("No STEP file loaded yet.")
-        self.step_status_label.setWordWrap(False)
-        self.step_status_label.setProperty("role", "status")
+        self.step_status_label = ViewportStatus("No STEP file loaded yet.")
         status_strip_layout.addWidget(self.step_status_label, stretch=1)
         self.step_load_progress = QProgressBar()
         self.step_load_progress.setFixedWidth(145)
@@ -1122,6 +1134,48 @@ class TolstackWindow(
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_workspace_split()
+
+    def _create_stack_analysis_actions(self):
+        """Keep the stack command next to its editable inputs and results."""
+        actions = QWidget()
+        actions.setObjectName("stackAnalysisActions")
+        row = QHBoxLayout(actions)
+        row.setContentsMargins(0, 0, 0, 0)
+        method = wrap_label(QLabel("Method: Worst Case"))
+        method.setProperty("role", "muted")
+        row.addWidget(method, 1)
+        button = QPushButton("Analyze stack")
+        button.setProperty("role", "primary")
+        button.clicked.connect(self._run_analysis_and_show_results)
+        row.addWidget(button)
+        self._stack_action_controls.append((method, button))
+        return actions, button
+
+    def _update_stack_analysis_actions(self, *_):
+        names = {"worst_case": "Worst Case", "rss": "RSS", "monte_carlo": "Monte Carlo"}
+        method = names.get(self.method_combo.currentText(), self.method_combo.currentText())
+        for label, button in self._stack_action_controls:
+            label.setText(f"Method: {method}")
+            button.setToolTip(f"Analyze the current tolerance stack using {method} and open its results.")
+            button.setAccessibleName(f"Analyze stack using {method}")
+
+    def _update_units_presentation(self):
+        """Label current inputs without converting values or relabeling old reports."""
+        if not hasattr(self, "project_units_label"):
+            return
+        units = (self.project.units.length, self.project.units.angle)
+        if units == self._displayed_project_units:
+            return
+        length, angle = units
+        self.project_units_label.setText(f"Project units · length: {length} · angle: {angle}")
+        self.table.setHorizontalHeaderLabels([
+            "Name", f"Nominal [{length}]", f"Tol + [{length}]", f"Tol - [{length}]",
+            "+/-", "Cpk", f"3D Value [{length}]",
+        ])
+        self.acceptance_min_label.setText(f"Acceptance min [{length}]")
+        self.acceptance_max_label.setText(f"Acceptance max [{length}]")
+        fit_table_columns(self.table)
+        self._displayed_project_units = units
 
     def _run_analysis_and_show_results(self):
         self.run_analysis()
